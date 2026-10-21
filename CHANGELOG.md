@@ -16,6 +16,9 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/), versi
 - Spike Fase 6c (`spikes/fase-6c/`): GX 1.24 via ADBC Flight SQL dan probe REST Unity Catalog OSS 0.7.0; hasil ADR 12–13.
 
 ### Changed
+- Spec Q-03: sanitasi hasil GX menjadi allowlist field `result` (ADR 12). K-03: storage path placeholder `file:///karhutlasql-unreadable/...`, UC tanpa kredensial bucket, grant di level schema/catalog (ADR 13).
+
+### Changed
 - Nama proyek diganti dari GarudaSQL menjadi KarhutlaSQL (binary `karhutlasql-*`, env `KARHUTLASQL_*`, prefix fungsi SQL & metrics `karhutla_*`).
 - Backlog: read-replica copy-file diganti DuckLake (Postgres + MinIO) sebagai topologi multi-writer v2.
 - SECURITY.md: tambah peta kepatuhan UU PDP / POJK dan kebijakan rewriter fail-closed, secret temporary-only, WORM.

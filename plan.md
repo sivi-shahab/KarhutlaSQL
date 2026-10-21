@@ -234,6 +234,6 @@ Kerjakan Fase 6c plan.md. Mulai spike GX-via-ADBC dan UC OSS API, catat ADR. Lal
 | 5b | ☐ | fondasi governance — sebelum 6 |
 | 6 | ☐ | |
 | 6b | ☐ | target selesai sebelum 16 Jan 2027 (sanksi PP 33/2026) |
-| 6c | ☐ | DQ Great Expectations + Unity Catalog; setelah 6b |
+| 6c | ◐ | spike selesai 2026-10-22 (ADR 12–13, `spikes/fase-6c/`); implementasi setelah 6b |
 | 7 | ☐ | |
 | 8 | ☐ | v2 |

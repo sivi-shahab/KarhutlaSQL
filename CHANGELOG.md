@@ -13,6 +13,7 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/), versi
 - Arsitektur: ADR 6–9 (parser di server, policy enforcement point, DuckLake multi-writer, access-history Parquet WORM).
 - Spec §4.6: data quality Great Expectations (Q-01…Q-05: suite GX, eksekusi via Flight SQL, `dq_publish` dengan sanitasi PII, `karhutla_dq_results()`, DQ gate report run) dan data catalog Unity Catalog OSS (K-01…K-05: sinkron metadata satu arah, properties `karhutla.*`, bukan jalur akses data); acceptance #11–#13.
 - Arsitektur: alur §4.5–4.6, paket `internal/dq` & `internal/catalogsync`, metrics DQ/sync, ADR 10–11. Plan: Fase 6c.
+- Spike Fase 6c (`spikes/fase-6c/`): GX 1.24 via ADBC Flight SQL dan probe REST Unity Catalog OSS 0.7.0; hasil ADR 12–13.
 
 ### Changed
 - Nama proyek diganti dari GarudaSQL menjadi KarhutlaSQL (binary `karhutlasql-*`, env `KARHUTLASQL_*`, prefix fungsi SQL & metrics `karhutla_*`).

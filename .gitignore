@@ -7,3 +7,5 @@ coverage.out
 .venv/
 tests/data/*.duckdb
 .env
+__pycache__/
+.pytest_cache/

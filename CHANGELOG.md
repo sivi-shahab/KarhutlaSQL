@@ -14,6 +14,7 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/1.1.0/), versi
 - Spec §4.6: data quality Great Expectations (Q-01…Q-05: suite GX, eksekusi via Flight SQL, `dq_publish` dengan sanitasi PII, `karhutla_dq_results()`, DQ gate report run) dan data catalog Unity Catalog OSS (K-01…K-05: sinkron metadata satu arah, properties `karhutla.*`, bukan jalur akses data); acceptance #11–#13.
 - Arsitektur: alur §4.5–4.6, paket `internal/dq` & `internal/catalogsync`, metrics DQ/sync, ADR 10–11. Plan: Fase 6c.
 - Spike Fase 6c (`spikes/fase-6c/`): GX 1.24 via ADBC Flight SQL dan probe REST Unity Catalog OSS 0.7.0; hasil ADR 12–13.
+- Fase 1: server Flight SQL di atas DuckDB — `internal/engine` (interface + `duckdb/`: Query→Arrow RecordReader, Exec, Describe, metadata, init SQL), `internal/flightsql` (statement, DoPut update, prepared statement + bind parameter, GetCatalogs/DbSchemas/Tables(+schema)/TableTypes/SqlInfo), `internal/server` (gRPC plaintext, graceful shutdown ≤ 30s), `internal/config` (cobra+viper, flag > env `KARHUTLASQL_*` > YAML, validasi), `make testdata`/`test-integration`/`run-dev`, test Python ADBC (`tests/python`) dan smoke test JDBC (`tests/jdbc`), job CI integration. ADR 14–16.
 - Fase 0: skeleton repo Go (`go.mod`, paket sesuai arsitektur §3 + `internal/version`), `karhutlasql-server --version/--help`, Makefile (`build`, `test`, `lint`; `run-dev`/`docker` stub), `.golangci.yml` (depguard: internal↛cmd, engine↛auth/session; forbidigo: `panic`), `.editorconfig`, CI GitHub Actions.
 
 ### Changed

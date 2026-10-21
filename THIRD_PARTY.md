@@ -7,8 +7,9 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | Module | Lisensi | Kegunaan |
 |---|---|---|
 | github.com/apache/arrow-go/v18 | Apache-2.0 | Arrow, Flight, Flight SQL server |
-| github.com/marcboeker/go-duckdb/v2 | MIT | Driver DuckDB (CGO) |
-| DuckDB (static lib via go-duckdb) | MIT | Query engine |
+| github.com/duckdb/duckdb-go/v2 | MIT | Driver DuckDB (CGO, Arrow interface; penerus marcboeker/go-duckdb, ADR 14) |
+| github.com/duckdb/duckdb-go-bindings | MIT | Library DuckDB prebuilt statis (v1.5.6) |
+| DuckDB (static lib via duckdb-go-bindings) | MIT | Query engine |
 | google.golang.org/grpc | Apache-2.0 | Transport gRPC |
 | google.golang.org/protobuf | BSD-3-Clause | Protobuf |
 | github.com/golang-jwt/jwt/v5 | MIT | JWT lokal |
@@ -17,6 +18,7 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | github.com/prometheus/client_golang | Apache-2.0 | Metrics |
 | github.com/spf13/cobra | Apache-2.0 | CLI |
 | github.com/spf13/viper | MIT | Konfigurasi |
+| github.com/spf13/pflag | BSD-3-Clause | Flag (dependensi cobra/viper) |
 | gopkg.in/yaml.v3 | MIT / Apache-2.0 | Policy file |
 | golang.org/x/crypto | BSD-3-Clause | bcrypt |
 | golang.org/x/time | BSD-3-Clause | Rate limiter |
@@ -35,6 +37,8 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | golangci-lint | GPL-3.0 (tool, tidak di-link) | Lint |
 | goreleaser | MIT | Rilis |
 | adbc-driver-flightsql (Python) | Apache-2.0 | Integration test |
+| pyarrow | Apache-2.0 | Integration test |
+| flight-sql-jdbc-driver (Java, 19.0.0) | Apache-2.0 | Smoke test JDBC (`tests/jdbc/`, tidak di-vendor) |
 | pytest | MIT | Integration test |
 | testcontainers-go | MIT | Keycloak dev di test |
 | Keycloak (image) | Apache-2.0 | IdP dev |

@@ -1,3 +1,9 @@
 graft/
 .claude/settings.local.json
 *.zip
+bin/
+dist/
+coverage.out
+.venv/
+tests/data/*.duckdb
+.env

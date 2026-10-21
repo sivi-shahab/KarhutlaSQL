@@ -1,0 +1,46 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - depguard
+    - errorlint
+    - forbidigo
+    - gosec
+    - misspell
+    - noctx
+    - unconvert
+  settings:
+    depguard:
+      rules:
+        # CLAUDE.md: internal/* tidak boleh import cmd/*.
+        internal-no-cmd:
+          files: ["**/internal/**"]
+          deny:
+            - pkg: github.com/bankmega/karhutlasql/cmd
+              desc: internal/* tidak boleh import cmd/*
+        # CLAUDE.md: engine tidak boleh tahu soal auth/session.
+        engine-no-auth-session:
+          files: ["**/internal/engine/**"]
+          deny:
+            - pkg: github.com/bankmega/karhutlasql/internal/auth
+              desc: engine tidak boleh tahu soal auth
+            - pkg: github.com/bankmega/karhutlasql/internal/authz
+              desc: engine tidak boleh tahu soal authz
+            - pkg: github.com/bankmega/karhutlasql/internal/session
+              desc: engine tidak boleh tahu soal session
+    forbidigo:
+      forbid:
+        - pattern: ^panic$
+          msg: jangan panic di jalur request; kembalikan error
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [forbidigo, gosec]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

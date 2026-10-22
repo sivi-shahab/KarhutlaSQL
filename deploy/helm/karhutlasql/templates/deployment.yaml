@@ -1,0 +1,98 @@
+{{- $secret := required "auth.existingSecret is required" .Values.auth.existingSecret -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "karhutlasql.fullname" . }}
+  labels: {{- include "karhutlasql.labels" . | nindent 4 }}
+spec:
+  replicas: 1 # DuckDB single-writer
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "karhutlasql.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "karhutlasql.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if .Values.tls.existingSecret }}
+      initContainers:
+        - name: tls-perms
+          image: {{ .Values.tls.initImage }}
+          command: ["sh", "-c", "cp /tls-secret/tls.crt /tls-secret/tls.key /tls/ && chmod 600 /tls/tls.key"]
+          securityContext: {{- include "karhutlasql.containerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - { name: tls-secret, mountPath: /tls-secret, readOnly: true }
+            - { name: tls, mountPath: /tls }
+      {{- end }}
+      containers:
+        - name: server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --database-filename=/data/warehouse.duckdb
+            - --host=0.0.0.0
+            - --port=31337
+            - --metrics-port=9090
+            - --username={{ .Values.auth.username }}
+            - --query-timeout={{ .Values.queryTimeout }}
+            {{- if .Values.tls.existingSecret }}
+            - --tls-cert=/tls/tls.crt
+            - --tls-key=/tls/tls.key
+            {{- else }}
+            - --tls-self-signed
+            {{- end }}
+            {{- range .Values.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: KARHUTLASQL_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: password }
+            - name: KARHUTLASQL_JWT_SECRET
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: jwt-secret, optional: true }
+          ports:
+            - { name: flight, containerPort: 31337 }
+            - { name: admin, containerPort: 9090 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: admin }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: admin }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            failureThreshold: 6
+          securityContext: {{- include "karhutlasql.containerSecurity" . | nindent 12 }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            {{- if .Values.tls.existingSecret }}
+            - { name: tls, mountPath: /tls, readOnly: true }
+            {{- end }}
+      terminationGracePeriodSeconds: 40 # drain gRPC ≤ 30s
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "karhutlasql.fullname" . }}
+        {{- if .Values.tls.existingSecret }}
+        - name: tls-secret
+          secret: { secretName: {{ .Values.tls.existingSecret }}, defaultMode: 0440 }
+        - name: tls
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

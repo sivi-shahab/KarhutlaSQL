@@ -2,11 +2,16 @@ package server
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -108,6 +113,43 @@ func LoadTLS(certFile, keyFile, caFile string) (*tls.Config, error) {
 		cfg.ClientCAs, cfg.ClientAuth = pool, tls.RequireAndVerifyClientCert
 	}
 	return cfg, nil
+}
+
+// SelfSignedTLS membuat sertifikat ECDSA P-256 self-signed (berlaku 1 tahun)
+// untuk localhost dan hosts. Kunci hanya di memori, tidak pernah ke disk;
+// klien harus memakai --tls-skip-verify. Dev/container saja.
+func SelfSignedTLS(hosts ...string) (*tls.Config, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("server.SelfSignedTLS: %w", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
+	if err != nil {
+		return nil, fmt.Errorf("server.SelfSignedTLS: %w", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "karhutlasql-self-signed"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().AddDate(1, 0, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+	}
+	for _, h := range hosts {
+		if ip := net.ParseIP(h); ip != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+		} else if h != "" {
+			tmpl.DNSNames = append(tmpl.DNSNames, h)
+		}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, fmt.Errorf("server.SelfSignedTLS: %w", err)
+	}
+	cert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+	return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, nil
 }
 
 // CheckSecretFile menolak file secret yang bisa dibaca group/other.

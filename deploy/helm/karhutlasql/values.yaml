@@ -1,0 +1,34 @@
+image:
+  repository: karhutlasql
+  tag: dev
+  pullPolicy: IfNotPresent
+
+auth:
+  username: admin
+  # Wajib: Secret berisi key `password` (plaintext atau hash bcrypt) dan
+  # opsional `jwt-secret` (HS256, ≥ 32 byte; tanpa ini token hangus saat restart).
+  existingSecret: ""
+
+tls:
+  # Secret tipe kubernetes.io/tls (tls.crt, tls.key). Kosong = sertifikat
+  # self-signed di memori (dev; klien --tls-skip-verify).
+  existingSecret: ""
+  # Menyalin kunci ke emptyDir dengan mode 0600 (server menolak kunci yang
+  # bisa dibaca group; fsGroup membuat mount Secret 0440).
+  initImage: busybox:1.37
+
+queryTimeout: 300
+extraArgs: []
+
+persistence:
+  size: 10Gi
+  storageClass: ""
+
+service:
+  type: ClusterIP
+  port: 31337
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

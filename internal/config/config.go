@@ -33,6 +33,7 @@ type Config struct {
 	JWTTTL            time.Duration
 
 	TLSCert, TLSKey, MTLSCA string
+	TLSSelfSigned           bool
 
 	QueryTimeout     time.Duration
 	HealthCheckQuery string
@@ -63,6 +64,7 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.String("tls-cert", "", "sertifikat server PEM")
 	fs.String("tls-key", "", "kunci server PEM (0600)")
 	fs.String("mtls-ca", "", "CA PEM untuk verifikasi client cert (mTLS wajib bila diset)")
+	fs.Bool("tls-self-signed", false, "TLS dengan sertifikat self-signed di memori (dev/container; klien --tls-skip-verify)")
 
 	fs.Int("query-timeout", 0, "batas eksekusi statement dalam detik; 0 = tanpa batas")
 	fs.String("health-check-query", "SELECT 1", "query untuk gRPC health dan /healthz")
@@ -103,6 +105,7 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		TLSCert:           v.GetString("tls-cert"),
 		TLSKey:            v.GetString("tls-key"),
 		MTLSCA:            v.GetString("mtls-ca"),
+		TLSSelfSigned:     v.GetBool("tls-self-signed"),
 		QueryTimeout:      time.Duration(v.GetInt("query-timeout")) * time.Second,
 		HealthCheckQuery:  v.GetString("health-check-query"),
 		MetricsPort:       v.GetInt("metrics-port"),
@@ -135,6 +138,9 @@ func (c Config) validate() error {
 	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		errs = append(errs, errors.New("tls-cert and tls-key must be set together"))
+	}
+	if c.TLSSelfSigned && c.TLSCert != "" {
+		errs = append(errs, errors.New("tls-self-signed and tls-cert are mutually exclusive"))
 	}
 	if c.MTLSCA != "" && c.TLSCert == "" {
 		errs = append(errs, errors.New("mtls-ca requires tls-cert and tls-key"))

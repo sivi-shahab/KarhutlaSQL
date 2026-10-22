@@ -1,0 +1,6 @@
+apiVersion: v2
+name: karhutlasql
+description: Server Arrow Flight SQL di atas DuckDB (single-writer, 1 replica)
+type: application
+version: 0.1.0
+appVersion: "dev"

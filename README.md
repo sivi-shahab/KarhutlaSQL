@@ -25,10 +25,10 @@ Server SQL analitik ringan: **Apache Arrow Flight SQL** di atas **DuckDB**, ditu
 make build
 
 # jalankan dengan sample TPC-H + TLS self-signed
-KARHUTLASQL_PASSWORD=secret ./bin/karhutlasql-server \
+make testdata
+KARHUTLASQL_PASSWORD=secret ./bin/karhutlasql-server --username admin \
   --database-filename tests/data/tpch_sf0_01.duckdb \
-  --tls-cert deploy/tls/server.crt --tls-key deploy/tls/server.key \
-  --print-queries
+  --tls-self-signed --print-queries
 
 # klien CLI
 KARHUTLASQL_PASSWORD=secret ./bin/karhutlasql-client \
@@ -58,11 +58,13 @@ jdbc:arrow-flight-sql://localhost:31337?useEncryption=true&user=admin&password=s
 ## Docker
 
 ```bash
-docker run --rm -p 31337:31337 -p 9090:9090 \
-  -e KARHUTLASQL_PASSWORD=secret -e TLS_ENABLED=1 \
-  -v $(pwd)/data:/data \
-  karhutlasql:latest --database-filename /data/warehouse.duckdb
+make docker   # karhutlasql:dev, distroless/static, server + client
+docker run --rm -p 31337:31337 -p 9090:9090 -e KARHUTLASQL_PASSWORD \
+  -v karhutlasql-data:/data karhutlasql:dev
+./bin/karhutlasql-client --host localhost --tls-skip-verify
 ```
+
+Default image: `--database-filename /data/warehouse.duckdb --username admin --tls-self-signed` (sertifikat di memori; produksi pakai `--tls-cert/--tls-key`). Image statis tidak bisa `LOAD` ekstensi DuckDB (ADR 19). Compose: `deploy/compose/compose.yaml`.
 
 Kubernetes: lihat `deploy/helm/` dan [docs/deploy-k8s.md](docs/deploy-k8s.md).
 

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "karhutlasql.fullname" . }}
+  labels: {{- include "karhutlasql.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector: {{- include "karhutlasql.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: flight
+      port: {{ .Values.service.port }}
+      targetPort: flight
+    - name: admin
+      port: 9090
+      targetPort: admin

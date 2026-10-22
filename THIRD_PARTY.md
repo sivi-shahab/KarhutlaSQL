@@ -23,7 +23,7 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | golang.org/x/crypto | BSD-3-Clause | bcrypt |
 | golang.org/x/time | BSD-3-Clause | Rate limiter |
 | github.com/google/uuid | BSD-3-Clause | Session/statement ID |
-| github.com/chzyer/readline | MIT | REPL klien |
+| golang.org/x/term | BSD-3-Clause | REPL klien (line editing, history, prompt password) |
 | SQL parser Go (dipilih di spike Fase 5b: `pganalyze/pg_query_go` BSD-3 / `xwb1989/sqlparser` Apache-2.0) | lihat kolom | Rewriter, masking, RLS |
 | github.com/apache/arrow-go/v18/parquet | Apache-2.0 | Writer access-history Parquet |
 | github.com/minio/minio-go/v7 | Apache-2.0 | Upload access-history ke MinIO (object-lock) |
@@ -36,6 +36,11 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 |---|---|---|
 | golangci-lint | GPL-3.0 (tool, tidak di-link) | Lint |
 | goreleaser | MIT | Rilis |
+| ghcr.io/goreleaser/goreleaser-cross (image) | MIT | Cross-compiler CGO untuk rilis server |
+| gcr.io/distroless/static-debian12 (image) | Apache-2.0 | Base image runtime |
+| golang (image builder) | BSD-3-Clause | Build image |
+| busybox (image, init container Helm opsional) | GPL-2.0 (tidak di-link, proses terpisah) | Salin kunci TLS ke emptyDir 0600 |
+| kind | Apache-2.0 | Uji Helm lokal |
 | adbc-driver-flightsql (Python) | Apache-2.0 | Integration test |
 | pyarrow | Apache-2.0 | Integration test |
 | flight-sql-jdbc-driver (Java, 19.0.0) | Apache-2.0 | Smoke test JDBC (`tests/jdbc/`, tidak di-vendor) |

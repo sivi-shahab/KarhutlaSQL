@@ -81,11 +81,17 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		return err
 	}
 	var tlsCfg *tls.Config
-	if cfg.TLSCert != "" {
+	switch {
+	case cfg.TLSCert != "":
 		if tlsCfg, err = server.LoadTLS(cfg.TLSCert, cfg.TLSKey, cfg.MTLSCA); err != nil {
 			return err
 		}
-	} else {
+	case cfg.TLSSelfSigned:
+		if tlsCfg, err = server.SelfSignedTLS(cfg.Host); err != nil {
+			return err
+		}
+		log.Warn("TLS with in-memory self-signed certificate (dev only; clients need --tls-skip-verify)")
+	default:
 		log.Warn("TLS disabled: plaintext gRPC (dev only; spec requires TLS in production)")
 	}
 

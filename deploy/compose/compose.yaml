@@ -1,0 +1,28 @@
+# Dev: server (TLS self-signed) + klien interaktif.
+#   export KARHUTLASQL_PASSWORD=...        # tidak ada default
+#   docker compose -f deploy/compose/compose.yaml up -d server
+#   docker compose -f deploy/compose/compose.yaml run --rm client
+services:
+  server:
+    image: karhutlasql:dev
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    environment:
+      KARHUTLASQL_PASSWORD: ${KARHUTLASQL_PASSWORD:?set KARHUTLASQL_PASSWORD}
+    ports: ["31337:31337", "9090:9090"]
+    volumes: ["data:/data"]
+
+  client:
+    image: karhutlasql:dev
+    profiles: [client]
+    entrypoint: ["/usr/local/bin/karhutlasql-client"]
+    command: ["--host", "server", "--tls-skip-verify", "--history-file", ""]
+    environment:
+      KARHUTLASQL_PASSWORD: ${KARHUTLASQL_PASSWORD:?set KARHUTLASQL_PASSWORD}
+    depends_on: [server]
+    stdin_open: true
+    tty: true
+
+volumes:
+  data: {}

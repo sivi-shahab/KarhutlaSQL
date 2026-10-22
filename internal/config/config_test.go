@@ -68,6 +68,7 @@ func TestLoad_Invalid(t *testing.T) {
 		{"ttl too long", []string{"--jwt-ttl", "25h"}},
 		{"tls cert without key", []string{"--tls-cert", "c.pem"}},
 		{"mtls without tls", []string{"--mtls-ca", "ca.pem"}},
+		{"self-signed with cert", []string{"--tls-self-signed", "--tls-cert", "c.pem", "--tls-key", "k.pem"}},
 		{"negative timeout", []string{"--query-timeout", "-1"}},
 		{"metrics port clash", []string{"--metrics-port", "31337"}},
 	}

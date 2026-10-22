@@ -1,0 +1,51 @@
+# goreleaser v2. Server butuh CGO (DuckDB) → jalankan di image goreleaser-cross
+# yang membawa cross-compiler (aarch64-linux-gnu-gcc, osxcross oa64-clang):
+#   docker run --rm -v $PWD:/src -w /src ghcr.io/goreleaser/goreleaser-cross:v1.27.3 \
+#     release --snapshot --clean -f goreleaser.yaml
+# Build lokal satu target (toolchain host): goreleaser build --snapshot --single-target
+version: 2
+project_name: karhutlasql
+
+builds:
+  - id: server
+    main: ./cmd/karhutlasql-server
+    binary: karhutlasql-server
+    tags: [duckdb_arrow]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X github.com/bankmega/karhutlasql/internal/version.Version={{ .Version }}"]
+    env: [CGO_ENABLED=1]
+    targets: [linux_amd64_v1, linux_arm64_v8.0, darwin_arm64_v8.0]
+    overrides:
+      - goos: linux
+        goarch: amd64
+        goamd64: v1
+        env: [CC=gcc, CXX=g++]
+      - goos: linux
+        goarch: arm64
+        goarm64: v8.0
+        env: [CC=aarch64-linux-gnu-gcc, CXX=aarch64-linux-gnu-g++]
+      - goos: darwin
+        goarch: arm64
+        goarm64: v8.0
+        env: [CC=oa64-clang, CXX=oa64-clang++]
+
+  - id: client
+    main: ./cmd/karhutlasql-client
+    binary: karhutlasql-client
+    flags: [-trimpath]
+    ldflags: ["-s -w -X github.com/bankmega/karhutlasql/internal/version.Version={{ .Version }}"]
+    env: [CGO_ENABLED=0]
+    targets: [linux_amd64_v1, linux_arm64_v8.0, darwin_arm64_v8.0]
+
+archives:
+  - formats: [tar.gz]
+    files: [LICENSE*, README.md, CHANGELOG.md, THIRD_PARTY.md]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true # CHANGELOG.md dikelola manual
+
+release:
+  disable: true # tidak push (CLAUDE.md); unggah artefak manual/CI rilis

@@ -43,6 +43,7 @@ run-dev: build testdata dev-certs
 		--database-filename $(TPCH) --username admin \
 		--tls-cert $(DEVTLS)/server.crt --tls-key $(DEVTLS)/server.key --print-queries
 
-# ponytail: stub sampai Dockerfile ada (Fase 3).
+IMAGE ?= karhutlasql:dev
+
 docker:
-	@echo "make docker: belum tersedia — lihat plan.md Fase 3" >&2; exit 1
+	docker build -f deploy/Dockerfile --build-arg VERSION=$(VERSION) -t $(IMAGE) .

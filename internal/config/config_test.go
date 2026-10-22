@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/spf13/pflag"
 )
@@ -13,7 +14,7 @@ func load(t *testing.T, args []string) (Config, error) {
 	t.Helper()
 	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 	RegisterFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(append([]string{"--username", "admin"}, args...)); err != nil {
 		t.Fatal(err)
 	}
 	return Load(fs)
@@ -63,6 +64,12 @@ func TestLoad_Invalid(t *testing.T) {
 		{"missing init sql file", []string{"--init-sql-file", "/nonexistent/init.sql"}},
 		{"bad log level", []string{"--log-level", "loud"}},
 		{"missing config file", []string{"--config", "/nonexistent/cfg.yaml"}},
+		{"empty username", []string{"--username", ""}},
+		{"ttl too long", []string{"--jwt-ttl", "25h"}},
+		{"tls cert without key", []string{"--tls-cert", "c.pem"}},
+		{"mtls without tls", []string{"--mtls-ca", "ca.pem"}},
+		{"negative timeout", []string{"--query-timeout", "-1"}},
+		{"metrics port clash", []string{"--metrics-port", "31337"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -70,6 +77,13 @@ func TestLoad_Invalid(t *testing.T) {
 				t.Fatal("want error")
 			}
 		})
+	}
+}
+
+func TestLoad_Durations(t *testing.T) {
+	c, err := load(t, []string{"--query-timeout", "300", "--jwt-ttl", "2h"})
+	if err != nil || c.QueryTimeout != 300*time.Second || c.JWTTTL != 2*time.Hour {
+		t.Fatalf("timeout=%v ttl=%v err=%v", c.QueryTimeout, c.JWTTTL, err)
 	}
 }
 

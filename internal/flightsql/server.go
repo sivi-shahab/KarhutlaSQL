@@ -18,6 +18,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/bankmega/karhutlasql/internal/audit"
+	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/version"
 )
@@ -26,11 +28,21 @@ import (
 // ponytail: map global + timer per handle; pindah ke session registry di Fase 4.
 const ticketTTL = 10 * time.Minute
 
+// Options perilaku eksekusi statement.
+type Options struct {
+	// QueryTimeout batas eksekusi per statement; 0 = tanpa batas.
+	QueryTimeout time.Duration
+	// PrintQueries mencatat teks SQL ke log (bukan audit).
+	PrintQueries bool
+	Audit        *audit.Logger
+}
+
 // Server mengimplementasikan flightsql.Server di atas engine.Engine.
 type Server struct {
 	fsql.BaseServer
-	eng engine.Engine
-	log *slog.Logger
+	eng  engine.Engine
+	log  *slog.Logger
+	opts Options
 
 	mu       sync.Mutex
 	stmts    map[string]string // handle → SQL, dikonsumsi DoGet
@@ -45,9 +57,12 @@ type prepared struct {
 	params []any // baris parameter terakhir yang di-bind (query)
 }
 
-// New membuat Server.
-func New(eng engine.Engine, log *slog.Logger) (*Server, error) {
-	s := &Server{eng: eng, log: log, stmts: map[string]string{}, prepared: map[string]*prepared{}}
+// New membuat Server. opts.Audit wajib.
+func New(eng engine.Engine, log *slog.Logger, opts Options) (*Server, error) {
+	if opts.Audit == nil {
+		return nil, errors.New("flightsql.New: audit logger is required")
+	}
+	s := &Server{eng: eng, log: log, opts: opts, stmts: map[string]string{}, prepared: map[string]*prepared{}}
 	s.Alloc = memory.DefaultAllocator
 	for id, v := range map[fsql.SqlInfo]any{
 		fsql.SqlInfoFlightSqlServerName:     "KarhutlaSQL",
@@ -96,18 +111,14 @@ func (s *Server) DoGetStatement(ctx context.Context, tkt fsql.StatementQueryTick
 	if !ok {
 		return nil, nil, status.Error(codes.NotFound, "unknown or expired statement handle")
 	}
-	return s.stream(ctx, func() (array.RecordReader, error) { return s.eng.Query(ctx, q) })
+	return s.query(ctx, q, nil)
 }
 
 func (s *Server) DoPutCommandStatementUpdate(ctx context.Context, cmd fsql.StatementUpdate) (int64, error) {
 	if len(cmd.GetTransactionId()) > 0 {
 		return 0, status.Error(codes.Unimplemented, "transactions are not supported")
 	}
-	n, err := s.eng.Exec(ctx, cmd.GetQuery())
-	if err != nil {
-		return 0, toStatus(ctx, err)
-	}
-	return n, nil
+	return s.update(ctx, cmd.GetQuery(), [][]any{nil})
 }
 
 // --- prepared statement ---
@@ -182,7 +193,7 @@ func (s *Server) DoGetPreparedStatement(ctx context.Context, cmd fsql.PreparedSt
 	p.mu.Lock()
 	params := p.params
 	p.mu.Unlock()
-	return s.stream(ctx, func() (array.RecordReader, error) { return s.eng.Query(ctx, p.sql, params...) })
+	return s.query(ctx, p.sql, params)
 }
 
 func (s *Server) DoPutPreparedStatementUpdate(ctx context.Context, cmd fsql.PreparedStatementUpdate, rdr flight.MessageReader) (int64, error) {
@@ -197,16 +208,109 @@ func (s *Server) DoPutPreparedStatementUpdate(ctx context.Context, cmd fsql.Prep
 	if len(rows) == 0 {
 		rows = [][]any{nil}
 	}
-	// ponytail: satu Exec per baris parameter, tanpa transaksi; bulk ingest di Fase 8.
+	return s.update(ctx, p.sql, rows)
+}
+
+// --- eksekusi + audit ---
+
+// begin mencatat statement_start dan mengembalikan ctx eksekusi (dengan
+// QueryTimeout) serta end yang wajib dipanggil tepat sekali.
+func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, func(rows int64, err error)) {
+	id, _ := auth.FromContext(ctx)
+	ev := audit.Event{User: id.Subject, Source: id.Source, Kind: kind}
+	s.opts.Audit.SQL(&ev, sql)
+	start := ev
+	start.Type = audit.StatementStart
+	s.opts.Audit.Emit(ctx, start)
+	if s.opts.PrintQueries {
+		s.log.Info("statement", "request_id", audit.RequestID(ctx), "user", id.Subject, "kind", kind, "sql", sql)
+	}
+
+	qctx, cancel := ctx, context.CancelFunc(func() {})
+	if s.opts.QueryTimeout > 0 {
+		qctx, cancel = context.WithTimeout(ctx, s.opts.QueryTimeout)
+	}
+	t0 := time.Now()
+	return qctx, func(rows int64, err error) {
+		cancel()
+		end := ev
+		end.Type, end.Rows, end.DurationMS = audit.StatementEnd, rows, time.Since(t0).Milliseconds()
+		switch {
+		case err != nil:
+			end.Status, end.Error = status.Code(err).String(), status.Convert(err).Message()
+		case ctx.Err() != nil:
+			end.Status = codes.Canceled.String() // klien memutus stream
+		default:
+			end.Status = codes.OK.String()
+		}
+		s.opts.Audit.Emit(ctx, end)
+	}
+}
+
+// query mengeksekusi SELECT dan mengalirkan hasilnya. Timeout berlaku untuk
+// engine; stream memakai ctx RPC agar timeout muncul sebagai error ke klien,
+// bukan stream yang terpotong diam-diam.
+func (s *Server) query(ctx context.Context, sql string, params []any) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+	qctx, end := s.begin(ctx, "query", sql)
+	rdr, err := s.eng.Query(qctx, sql, params...)
+	if err != nil {
+		err = toStatus(qctx, err)
+		end(0, err)
+		return nil, nil, err
+	}
+	ar := &auditedReader{RecordReader: rdr, qctx: qctx, end: end}
+	ch := make(chan flight.StreamChunk)
+	go flight.StreamChunksFromReader(ctx, ar, ch)
+	return rdr.Schema(), ch, nil
+}
+
+// update mengeksekusi statement untuk setiap baris parameter.
+// ponytail: satu Exec per baris, tanpa transaksi; bulk ingest di Fase 8.
+func (s *Server) update(ctx context.Context, sql string, rows [][]any) (int64, error) {
+	qctx, end := s.begin(ctx, "update", sql)
 	var total int64
 	for _, args := range rows {
-		n, err := s.eng.Exec(ctx, p.sql, args...)
+		n, err := s.eng.Exec(qctx, sql, args...)
 		if err != nil {
-			return total, toStatus(ctx, err)
+			err = toStatus(qctx, err)
+			end(total, err)
+			return total, err
 		}
 		total += n
 	}
+	end(total, nil)
 	return total, nil
+}
+
+// auditedReader menghitung baris, memetakan error ke status gRPC, dan
+// memanggil end saat dilepas (StreamChunksFromReader me-Release sekali).
+type auditedReader struct {
+	array.RecordReader
+	qctx context.Context
+	rows int64
+	end  func(int64, error)
+	once sync.Once
+}
+
+func (r *auditedReader) Next() bool {
+	if !r.RecordReader.Next() {
+		return false
+	}
+	r.rows += r.RecordReader.RecordBatch().NumRows()
+	return true
+}
+
+func (r *auditedReader) Err() error {
+	if err := r.RecordReader.Err(); err != nil {
+		return toStatus(r.qctx, err)
+	}
+	return nil
+}
+
+func (r *auditedReader) Release() {
+	err := r.Err()
+	r.RecordReader.Release()
+	r.once.Do(func() { r.end(r.rows, err) })
 }
 
 // --- metadata ---

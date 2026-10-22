@@ -6,7 +6,7 @@ TAGS    := duckdb_arrow
 PYTHON  ?= .venv/bin/python
 TPCH    := tests/data/tpch_sf0_01.duckdb
 
-.PHONY: build test test-integration testdata lint run-dev docker
+.PHONY: build test test-integration testdata lint run-dev dev-certs docker
 
 build:
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
@@ -26,8 +26,22 @@ test-integration: build testdata
 lint:
 	golangci-lint run ./...
 
-run-dev: build testdata
-	./bin/karhutlasql-server --host 127.0.0.1 --database-filename $(TPCH)
+DEVTLS := .dev/tls
+
+$(DEVTLS)/server.crt:
+	@mkdir -p $(DEVTLS)
+	openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 \
+		-subj /CN=localhost -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+		-keyout $(DEVTLS)/server.key -out $(DEVTLS)/server.crt
+	chmod 600 $(DEVTLS)/server.key
+
+dev-certs: $(DEVTLS)/server.crt
+
+# Dev saja: admin/secret (CONTRIBUTING.md), TLS self-signed, audit ke stdout.
+run-dev: build testdata dev-certs
+	KARHUTLASQL_PASSWORD=$${KARHUTLASQL_PASSWORD:-secret} ./bin/karhutlasql-server --host 127.0.0.1 \
+		--database-filename $(TPCH) --username admin \
+		--tls-cert $(DEVTLS)/server.crt --tls-key $(DEVTLS)/server.key --print-queries
 
 # ponytail: stub sampai Dockerfile ada (Fase 3).
 docker:

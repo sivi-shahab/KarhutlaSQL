@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -24,6 +25,8 @@ func TestRun(t *testing.T) {
 		{"help", []string{"--help"}, 0, "--database-filename", ""},
 		{"unknown flag", []string{"--nope"}, 1, "", "unknown flag"},
 		{"invalid config", []string{"--port", "0"}, 1, "", "out of range"},
+		{"auth required", nil, 1, "", "username is required"},
+		{"empty password env", []string{"--username", "admin", "--password-env", "KARHUTLASQL_TEST_UNSET"}, 1, "", "env KARHUTLASQL_TEST_UNSET is empty"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -41,8 +44,27 @@ func TestRun(t *testing.T) {
 	}
 }
 
+// syncBuffer bytes.Buffer aman konkuren (server menulis, test membaca).
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
 // TestRun_ServeAndShutdown: server listen, lalu cancel ctx (= SIGTERM) → exit 0.
 func TestRun_ServeAndShutdown(t *testing.T) {
+	t.Setenv("KARHUTLASQL_PASSWORD", "test-only-pw")
 	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -51,10 +73,10 @@ func TestRun_ServeAndShutdown(t *testing.T) {
 	_ = lis.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var errOut bytes.Buffer
+	var errOut, auditOut syncBuffer
 	done := make(chan int, 1)
 	go func() {
-		done <- run(ctx, []string{"--host", "127.0.0.1", "--port", strconv.Itoa(port)}, &bytes.Buffer{}, &errOut)
+		done <- run(ctx, []string{"--host", "127.0.0.1", "--port", strconv.Itoa(port), "--metrics-port", "0", "--username", "admin"}, &auditOut, &errOut)
 	}()
 
 	deadline := time.Now().Add(10 * time.Second)

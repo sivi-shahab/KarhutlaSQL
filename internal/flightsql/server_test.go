@@ -4,10 +4,13 @@ package flightsql
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,25 +19,86 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	fsql "github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/bankmega/karhutlasql/internal/audit"
+	"github.com/bankmega/karhutlasql/internal/auth/local"
+	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
+	"github.com/bankmega/karhutlasql/internal/interceptor"
 	"github.com/bankmega/karhutlasql/internal/server"
 )
 
-// startServer menjalankan server Flight SQL penuh (gRPC asli) di port acak.
-func startServer(t *testing.T, initSQL string) *fsql.Client {
+const (
+	testUser = "admin"
+	testPass = "s3cret-pw"
+)
+
+// testHash bcrypt MinCost: hash plaintext DefaultCost per server terlalu lambat di -race.
+var testHash = func() string {
+	h, err := bcrypt.GenerateFromPassword([]byte(testPass), bcrypt.MinCost)
+	if err != nil {
+		panic(err)
+	}
+	return string(h)
+}()
+
+// testEnv server Flight SQL penuh (gRPC asli, auth interceptor, audit) di port acak.
+type testEnv struct {
+	addr  string
+	cl    *fsql.Client
+	ctx   context.Context // ctx klien yang sudah login
+	audit *memSink
+	clock *atomic.Pointer[time.Time]
+	creds credentials.TransportCredentials
+}
+
+type envOpts struct {
+	initSQL      string
+	queryTimeout time.Duration
+	tls          *tls.Config
+	clientCreds  credentials.TransportCredentials
+	auditSQL     bool
+	skipLogin    bool
+	engine       engine.Engine // nil = DuckDB in-memory dengan initSQL
+}
+
+func startServer(t *testing.T, initSQL string) *testEnv {
+	return start(t, envOpts{initSQL: initSQL})
+}
+
+func start(t *testing.T, o envOpts) *testEnv {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	eng, err := duckdb.Open(ctx, duckdb.Config{InitSQL: initSQL})
+	eng := o.engine
+	if eng == nil {
+		d, err := duckdb.Open(ctx, duckdb.Config{InitSQL: o.initSQL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		eng = d
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sink := &memSink{}
+	al := audit.New(sink, o.auditSQL, func(err error) { t.Errorf("audit: %v", err) })
+
+	clock := &atomic.Pointer[time.Time]{}
+	now := time.Now()
+	clock.Store(&now)
+	authn, err := local.New(local.Config{
+		Username: testUser, Password: testHash, TTL: time.Hour,
+		HMACSecret: []byte("0123456789abcdef0123456789abcdef"),
+		Now:        func() time.Time { return *clock.Load() },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := New(eng, log)
+	srv, err := New(eng, log, Options{QueryTimeout: o.queryTimeout, Audit: al})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,22 +106,69 @@ func startServer(t *testing.T, initSQL string) *fsql.Client {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ai := interceptor.NewAuth(authn, al, log)
 	done := make(chan error, 1)
-	go func() { done <- server.Serve(ctx, lis, srv, 5*time.Second, log) }()
+	go func() {
+		done <- server.Serve(ctx, lis, srv, server.Options{
+			TLS: o.tls, Unary: []grpc.UnaryServerInterceptor{ai.Unary()}, Stream: []grpc.StreamServerInterceptor{ai.Stream()},
+			Health: func(context.Context) error { return nil }, Drain: 5 * time.Second,
+		}, log)
+	}()
 
-	cl, err := fsql.NewClient(lis.Addr().String(), nil, nil, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatal(err)
+	creds := o.clientCreds
+	if creds == nil {
+		creds = insecure.NewCredentials()
 	}
+	env := &testEnv{addr: lis.Addr().String(), audit: sink, clock: clock, creds: creds}
+	env.cl = env.dial(t)
 	t.Cleanup(func() {
-		_ = cl.Close()
 		cancel()
 		if err := <-done; err != nil {
 			t.Errorf("serve: %v", err)
 		}
 		_ = eng.Close()
 	})
+	if !o.skipLogin {
+		if env.ctx, err = env.cl.Client.AuthenticateBasicToken(context.Background(), testUser, testPass); err != nil {
+			t.Fatalf("login: %v", err)
+		}
+	}
+	return env
+}
+
+func (e *testEnv) dial(t *testing.T) *fsql.Client {
+	t.Helper()
+	cl, err := fsql.NewClient(e.addr, nil, nil, grpc.WithTransportCredentials(e.creds))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cl.Close() })
 	return cl
+}
+
+// memSink menampung event audit untuk diperiksa test.
+type memSink struct {
+	mu     sync.Mutex
+	events []audit.Event
+}
+
+func (m *memSink) Emit(e audit.Event) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.events = append(m.events, e)
+	return nil
+}
+
+func (m *memSink) ofType(typ string) []audit.Event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []audit.Event
+	for _, e := range m.events {
+		if e.Type == typ {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // fetch menguras semua endpoint FlightInfo; nilai kolom c disalin sebagai string.
@@ -84,8 +195,8 @@ func fetch(ctx context.Context, t *testing.T, cl *fsql.Client, info *flight.Flig
 }
 
 func TestStatement(t *testing.T) {
-	cl := startServer(t, "")
-	ctx := context.Background()
+	env := startServer(t, "")
+	cl, ctx := env.cl, env.ctx
 	tests := []struct {
 		sql      string
 		wantRows int
@@ -109,8 +220,8 @@ func TestStatement(t *testing.T) {
 }
 
 func TestStatement_Errors(t *testing.T) {
-	cl := startServer(t, "")
-	ctx := context.Background()
+	env := startServer(t, "")
+	cl, ctx := env.cl, env.ctx
 	info, err := cl.Execute(ctx, "SELEC 1")
 	if err == nil {
 		_, err = cl.DoGet(ctx, info.Endpoint[0].Ticket)
@@ -140,8 +251,8 @@ func TestStatement_Errors(t *testing.T) {
 }
 
 func TestUpdate(t *testing.T) {
-	cl := startServer(t, "")
-	ctx := context.Background()
+	env := startServer(t, "")
+	cl, ctx := env.cl, env.ctx
 	if _, err := cl.ExecuteUpdate(ctx, "CREATE TABLE t (i INTEGER, s VARCHAR)"); err != nil {
 		t.Fatal(err)
 	}
@@ -152,8 +263,8 @@ func TestUpdate(t *testing.T) {
 }
 
 func TestPreparedStatement(t *testing.T) {
-	cl := startServer(t, "CREATE TABLE t (i INTEGER, s VARCHAR)")
-	ctx := context.Background()
+	env := startServer(t, "CREATE TABLE t (i INTEGER, s VARCHAR)")
+	cl, ctx := env.cl, env.ctx
 	mem := memory.NewGoAllocator()
 
 	params := func(i int64, s string) arrow.RecordBatch {
@@ -202,8 +313,8 @@ func TestPreparedStatement(t *testing.T) {
 }
 
 func TestMetadata(t *testing.T) {
-	cl := startServer(t, "CREATE SCHEMA s1; CREATE TABLE s1.orders (id INTEGER, note VARCHAR)")
-	ctx := context.Background()
+	env := startServer(t, "CREATE SCHEMA s1; CREATE TABLE s1.orders (id INTEGER, note VARCHAR)")
+	cl, ctx := env.cl, env.ctx
 	s1, ord := "s1", "ord%"
 
 	info, err := cl.GetCatalogs(ctx)

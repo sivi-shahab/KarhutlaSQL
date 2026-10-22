@@ -1,5 +1,5 @@
 // Smoke test driver Arrow Flight SQL JDBC (yang dipakai DBeaver): metadata + TPC-H Q1.
-// java --add-opens=java.base/java.nio=ALL-UNNAMED -cp flight-sql-jdbc-driver-<v>.jar tests/jdbc/JdbcSmoke.java <port>
+// KARHUTLASQL_PASSWORD=... java --add-opens=java.base/java.nio=ALL-UNNAMED -cp flight-sql-jdbc-driver-<v>.jar tests/jdbc/JdbcSmoke.java <port> [user]
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
@@ -9,7 +9,13 @@ import java.sql.Statement;
 public class JdbcSmoke {
     public static void main(String[] args) throws Exception {
         String url = "jdbc:arrow-flight-sql://127.0.0.1:" + args[0] + "/?useEncryption=false";
-        try (Connection c = DriverManager.getConnection(url)) {
+        String user = args.length > 1 ? args[1] : "admin";
+        try (Connection bad = DriverManager.getConnection(url, user, "wrong-password")) {
+            throw new AssertionError("wrong password must be rejected");
+        } catch (java.sql.SQLException e) {
+            check(true, "wrong password rejected: " + e.getMessage().lines().findFirst().orElse(""));
+        }
+        try (Connection c = DriverManager.getConnection(url, user, System.getenv("KARHUTLASQL_PASSWORD"))) {
             DatabaseMetaData md = c.getMetaData();
             System.out.println("server: " + md.getDatabaseProductName() + " " + md.getDatabaseProductVersion());
             check(count(md.getCatalogs()) > 0, "getCatalogs");

@@ -1,0 +1,1 @@
+UNPIVOT (SELECT 1 AS a, 2 AS b) ON a, b INTO NAME k VALUE v

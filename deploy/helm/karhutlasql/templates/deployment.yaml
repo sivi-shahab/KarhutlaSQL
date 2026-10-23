@@ -18,7 +18,7 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
         prometheus.io/scheme: https # port admin ikut TLS server
-        checksum/policy: {{ .Values.policy | sha256sum }}
+        checksum/policy: {{ printf "%s%s" .Values.policy .Values.classification | sha256sum }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -57,6 +57,9 @@ spec:
             {{- if .Values.policy }}
             - --policy-file=/etc/karhutlasql/policy.yaml
             {{- end }}
+            {{- if .Values.classification }}
+            - --classification-file=/etc/karhutlasql/classification.yaml
+            {{- end }}
             {{- with .Values.oidc.issuer }}
             - --oidc-issuer={{ . }}
             - --oidc-audience={{ $.Values.oidc.audience }}
@@ -71,6 +74,9 @@ spec:
             - name: KARHUTLASQL_JWT_SECRET
               valueFrom:
                 secretKeyRef: { name: {{ $secret }}, key: jwt-secret, optional: true }
+            - name: KARHUTLASQL_MASK_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}, key: mask-key, optional: true }
           ports:
             - { name: flight, containerPort: 31337 }
             - { name: admin, containerPort: 9090 }
@@ -86,7 +92,7 @@ spec:
           resources: {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - { name: data, mountPath: /data }
-            {{- if .Values.policy }}
+            {{- if or .Values.policy .Values.classification }}
             - { name: policy, mountPath: /etc/karhutlasql, readOnly: true }
             {{- end }}
             {{- if .Values.tls.existingSecret }}
@@ -94,7 +100,7 @@ spec:
             {{- end }}
       terminationGracePeriodSeconds: 40 # drain gRPC ≤ 30s
       volumes:
-        {{- if .Values.policy }}
+        {{- if or .Values.policy .Values.classification }}
         - name: policy
           configMap: { name: {{ include "karhutlasql.fullname" . }}-policy }
         {{- end }}

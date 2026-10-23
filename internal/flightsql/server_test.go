@@ -31,6 +31,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/auth/local"
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
 	"github.com/bankmega/karhutlasql/internal/authz"
+	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
@@ -77,13 +78,16 @@ type envOpts struct {
 	engine       engine.Engine // nil = DuckDB in-memory dengan initSQL
 	policy       *authz.Store  // nil = DevPolicy(testUser)
 	oidc         *oidc.Verifier
+
+	classification *classification.Store
+	maskKey        []byte
 }
 
 func startServer(t *testing.T, initSQL string) *testEnv {
 	return start(t, envOpts{initSQL: initSQL})
 }
 
-func start(t *testing.T, o envOpts) *testEnv {
+func start(t testing.TB, o envOpts) *testEnv {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -94,7 +98,7 @@ func start(t *testing.T, o envOpts) *testEnv {
 	eng := o.engine
 	if eng == nil {
 		d, err := duckdb.Open(ctx, duckdb.Config{InitSQL: o.initSQL, Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al})
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, MaskKey: o.maskKey})
 		}})
 		if err != nil {
 			t.Fatal(err)
@@ -117,7 +121,7 @@ func start(t *testing.T, o envOpts) *testEnv {
 	if policy == nil {
 		policy = authz.Static(authz.DevPolicy(testUser))
 	}
-	srv, err := New(eng, log, Options{QueryTimeout: o.queryTimeout, Audit: al, Metrics: m, Policy: policy})
+	srv, err := New(eng, log, Options{QueryTimeout: o.queryTimeout, Audit: al, Metrics: m, Policy: policy, Classification: o.classification})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +160,7 @@ func start(t *testing.T, o envOpts) *testEnv {
 	return env
 }
 
-func (e *testEnv) dial(t *testing.T) *fsql.Client {
+func (e *testEnv) dial(t testing.TB) *fsql.Client {
 	t.Helper()
 	cl, err := fsql.NewClient(e.addr, nil, nil, grpc.WithTransportCredentials(e.creds))
 	if err != nil {

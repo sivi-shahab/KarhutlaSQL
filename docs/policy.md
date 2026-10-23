@@ -47,3 +47,57 @@ SQL (DBeaver, `\dt`) hanya menampilkan catalog yang boleh dibaca.
 
 Role `admin` juga yang boleh melihat semua sesi dan kill session
 (`docs/monitoring.md`).
+
+## Governance data (G-02 … G-06)
+
+```yaml
+roles:
+  analyst:
+    catalogs:
+      warehouse: [read]               # catalog
+      "sandbox.main": [read, write]   # schema
+      "hr.main.gaji": [read]          # tabel
+    unmask: [pii.phone]               # tag yang boleh dilihat mentah ("*" = semua)
+  cabang:
+    catalogs: { warehouse.main.nasabah: [read] }
+    row_filters:                      # RLS: predikat SQL DuckDB per tabel
+      warehouse.main.nasabah: "branch_code = {{claim.branch}}"
+  ai_sandbox:
+    catalogs: { warehouse: [read] }
+    select_only: true                 # selain SELECT → PERMISSION_DENIED
+    max_rows: 500                     # hasil dibungkus LIMIT 500
+    max_bytes: 104857600              # lewat batas → RESOURCE_EXHAUSTED
+    timeout: 60s                      # min(--query-timeout, timeout)
+```
+
+- `{{claim.x}}` diganti literal string dari claim token OIDC (di-quote aman);
+  claim tidak ada → query ditolak. Email dipakai hanya bila `email_verified`.
+- Banyak role: tabel tanpa filter bila salah satu role pemberi izin baca tidak
+  punya `row_filters` untuk tabel itu, selain itu OR semua filter; kolom
+  terbuka bila salah satu role `unmask` tag-nya; batas profil = yang paling ketat.
+
+`--classification-file classification.yaml`:
+
+```yaml
+tags:
+  pii.nik:     { mask: partial, keep_last: 4 }   # ************1234
+  pii.phone:   { mask: hash_hmac }               # hex HMAC-SHA256, deterministik
+  pii.name:    { mask: redact }                  # [REDACTED]
+  fin.balance: { mask: "null" }                  # NULL bertipe asli
+columns:
+  warehouse.main.nasabah.nik: pii.nik
+```
+
+`hash_hmac` butuh kunci ≥ 32 byte di env `--mask-hmac-key-env` (default
+`KARHUTLASQL_MASK_KEY`).
+
+Cara kerja: setiap tabel yang ber-mask/RLS bagi pemanggil diganti subquery
+terlindung, lalu plan DuckDB diverifikasi. Konsekuensinya:
+
+- Filter/JOIN pada kolom ter-mask memakai nilai ter-mask (`WHERE nik = '…'`
+  tidak menemukan apa pun) — nilai mentah tidak bisa ditebak lewat filter.
+- Hanya SELECT yang di-rewrite: `INSERT … SELECT` / `CREATE TABLE AS` dari
+  tabel ter-govern ditolak.
+- Membaca tabel ter-govern lewat view ditolak ("bypasses masking/row filter").
+- `PIVOT` top-level dan sintaks yang tidak bisa diserialisasi DuckDB ditolak
+  dengan pesan "cannot be rewritten for data governance".

@@ -22,6 +22,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/authz"
+	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/metrics"
 	"github.com/bankmega/karhutlasql/internal/session"
@@ -41,6 +42,8 @@ type Options struct {
 	Audit        *audit.Logger
 	Metrics      *metrics.Metrics // nil = tanpa metrics
 	Policy       *authz.Store     // wajib
+	// Classification tag kolom & mask (G-03); nil = tanpa mask.
+	Classification *classification.Store
 }
 
 // Server mengimplementasikan flightsql.Server di atas engine.Engine.
@@ -66,6 +69,9 @@ type prepared struct {
 func New(eng engine.Engine, log *slog.Logger, opts Options) (*Server, error) {
 	if opts.Audit == nil || opts.Policy == nil {
 		return nil, errors.New("flightsql.New: audit logger and policy are required")
+	}
+	if opts.Classification == nil {
+		opts.Classification, _ = classification.Load("") // path kosong: tidak pernah error
 	}
 	s := &Server{eng: eng, log: log, opts: opts}
 	s.Alloc = memory.DefaultAllocator
@@ -143,10 +149,12 @@ func (s *Server) CreatePreparedStatement(ctx context.Context, req fsql.ActionCre
 	if err != nil {
 		return fsql.ActionCreatePreparedStatementResult{}, err
 	}
-	if err := s.authorize(ctx, req.GetQuery()); err != nil {
+	pl, err := s.authorize(ctx, req.GetQuery())
+	if err != nil {
 		return fsql.ActionCreatePreparedStatementResult{}, err
 	}
-	info, err := s.eng.Describe(ctx, req.GetQuery())
+	// Schema dari SQL hasil rewrite (kolom ter-mask); eksekusi meng-otorisasi ulang.
+	info, err := s.eng.Describe(sqlext.WithMaskNonce(ctx, pl.nonce), pl.sql)
 	if err != nil {
 		return fsql.ActionCreatePreparedStatementResult{}, toStatus(ctx, err)
 	}
@@ -236,14 +244,14 @@ func (s *Server) DoPutPreparedStatementUpdate(ctx context.Context, cmd fsql.Prep
 
 // --- eksekusi + audit ---
 
-// begin mencatat statement_start, menegakkan policy (gagal → statement_end
-// + error), mendaftarkan statement di sesi (kill membatalkannya), dan
-// mengembalikan ctx eksekusi (dengan QueryTimeout) serta end yang wajib
-// dipanggil tepat sekali bila err nil.
-func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, func(rows, bytes int64, err error), error) {
+// begin mencatat statement_start, mendaftarkan statement di sesi (kill
+// membatalkannya), menegakkan policy (gagal → statement_end + error), dan
+// mengembalikan ctx eksekusi (timeout server/role, nonce mask), plan (SQL
+// yang dieksekusi) serta end yang wajib dipanggil tepat sekali bila err nil.
+func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, plan, func(rows, bytes int64, err error), error) {
 	ss, err := sess(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, plan{}, nil, err
 	}
 	id, _ := auth.FromContext(ctx)
 	ev := audit.Event{User: id.Subject, Source: id.Source, Kind: kind}
@@ -257,9 +265,6 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 
 	qctx, done := ss.Begin(ctx, sql)
 	cancel := context.CancelFunc(func() {})
-	if s.opts.QueryTimeout > 0 {
-		qctx, cancel = context.WithTimeout(qctx, s.opts.QueryTimeout)
-	}
 	t0 := time.Now()
 	end := func(rows, bytes int64, err error) {
 		cancel()
@@ -282,28 +287,40 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 			s.opts.Metrics.Sent(id.Subject, rows, bytes)
 		}
 	}
-	if err := s.authorize(qctx, sql); err != nil {
+	pl, err := s.authorize(qctx, sql)
+	if err != nil {
 		end(0, 0, err)
-		return nil, nil, err
+		return nil, plan{}, nil, err
 	}
-	return qctx, end, nil
+	timeout := s.opts.QueryTimeout
+	if t := pl.limits.Timeout; t > 0 && (timeout == 0 || t < timeout) {
+		timeout = t
+	}
+	if timeout > 0 {
+		tctx, tcancel := context.WithTimeout(qctx, timeout)
+		qctx, cancel = tctx, tcancel // dipanggil oleh end
+	}
+	if pl.nonce != "" {
+		qctx = sqlext.WithMaskNonce(qctx, pl.nonce)
+	}
+	return qctx, pl, end, nil
 }
 
 // query mengeksekusi SELECT dan mengalirkan hasilnya. Timeout berlaku untuk
 // engine; stream memakai ctx RPC agar timeout muncul sebagai error ke klien,
 // bukan stream yang terpotong diam-diam.
 func (s *Server) query(ctx context.Context, sql string, params []any) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	qctx, end, err := s.begin(ctx, "query", sql)
+	qctx, pl, end, err := s.begin(ctx, "query", sql)
 	if err != nil {
 		return nil, nil, err
 	}
-	rdr, err := s.eng.Query(qctx, sql, params...)
+	rdr, err := s.eng.Query(qctx, pl.sql, params...)
 	if err != nil {
 		err = toStatus(qctx, err)
 		end(0, 0, err)
 		return nil, nil, err
 	}
-	ar := &auditedReader{RecordReader: rdr, qctx: qctx, end: end}
+	ar := &auditedReader{RecordReader: rdr, qctx: qctx, end: end, maxBytes: pl.limits.MaxBytes}
 	ch := make(chan flight.StreamChunk)
 	go flight.StreamChunksFromReader(ctx, ar, ch)
 	return rdr.Schema(), ch, nil
@@ -312,13 +329,13 @@ func (s *Server) query(ctx context.Context, sql string, params []any) (*arrow.Sc
 // update mengeksekusi statement untuk setiap baris parameter.
 // ponytail: satu Exec per baris, tanpa transaksi; bulk ingest di Fase 8.
 func (s *Server) update(ctx context.Context, sql string, rows [][]any) (int64, error) {
-	qctx, end, err := s.begin(ctx, "update", sql)
+	qctx, pl, end, err := s.begin(ctx, "update", sql)
 	if err != nil {
 		return 0, err
 	}
 	var total int64
 	for _, args := range rows {
-		n, err := s.eng.Exec(qctx, sql, args...)
+		n, err := s.eng.Exec(qctx, pl.sql, args...)
 		if err != nil {
 			err = toStatus(qctx, err)
 			end(total, 0, err)
@@ -334,22 +351,30 @@ func (s *Server) update(ctx context.Context, sql string, rows [][]any) (int64, e
 // memanggil end saat dilepas (StreamChunksFromReader me-Release sekali).
 type auditedReader struct {
 	array.RecordReader
-	qctx  context.Context
-	rows  int64
-	bytes int64
-	end   func(rows, bytes int64, err error)
-	once  sync.Once
+	qctx     context.Context
+	rows     int64
+	bytes    int64
+	maxBytes int64 // batas byte role (G-06); 0 = tanpa batas
+	capErr   error
+	end      func(rows, bytes int64, err error)
+	once     sync.Once
 }
 
 func (r *auditedReader) Next() bool {
-	if !r.RecordReader.Next() {
+	if r.capErr != nil || !r.RecordReader.Next() {
 		return false
 	}
 	rec := r.RecordBatch()
-	r.rows += rec.NumRows()
+	var n int64
 	for _, c := range rec.Columns() {
-		r.bytes += dataSize(c.Data())
+		n += dataSize(c.Data())
 	}
+	if r.maxBytes > 0 && r.bytes+n > r.maxBytes {
+		r.capErr = status.Errorf(codes.ResourceExhausted, "result exceeds %d bytes allowed for this role", r.maxBytes)
+		return false
+	}
+	r.rows += rec.NumRows()
+	r.bytes += n
 	return true
 }
 
@@ -368,6 +393,9 @@ func dataSize(d arrow.ArrayData) int64 {
 }
 
 func (r *auditedReader) Err() error {
+	if r.capErr != nil {
+		return r.capErr
+	}
 	if err := r.RecordReader.Err(); err != nil {
 		return toStatus(r.qctx, err)
 	}
@@ -387,7 +415,7 @@ func (s *Server) GetFlightInfoCatalogs(_ context.Context, desc *flight.FlightDes
 }
 
 func (s *Server) DoGetCatalogs(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	return s.metadata(ctx, schema_ref.Catalogs, func() (array.RecordReader, error) { return s.eng.Catalogs(ctx) }, true)
+	return s.metadata(ctx, schema_ref.Catalogs, func() (array.RecordReader, error) { return s.eng.Catalogs(ctx) }, 1)
 }
 
 func (s *Server) GetFlightInfoSchemas(_ context.Context, _ fsql.GetDBSchemas, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
@@ -397,7 +425,7 @@ func (s *Server) GetFlightInfoSchemas(_ context.Context, _ fsql.GetDBSchemas, de
 func (s *Server) DoGetDBSchemas(ctx context.Context, cmd fsql.GetDBSchemas) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	return s.metadata(ctx, schema_ref.DBSchemas, func() (array.RecordReader, error) {
 		return s.eng.Schemas(ctx, cmd.GetCatalog(), cmd.GetDBSchemaFilterPattern())
-	}, true)
+	}, 2)
 }
 
 func (s *Server) GetFlightInfoTables(_ context.Context, _ fsql.GetTables, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
@@ -414,7 +442,7 @@ func (s *Server) DoGetTables(ctx context.Context, cmd fsql.GetTables) (*arrow.Sc
 		})
 	}
 	if !cmd.GetIncludeSchema() {
-		return s.metadata(ctx, schema_ref.Tables, query, true)
+		return s.metadata(ctx, schema_ref.Tables, query, 3)
 	}
 	return s.tablesWithSchema(ctx, query)
 }
@@ -424,7 +452,7 @@ func (s *Server) GetFlightInfoTableTypes(_ context.Context, desc *flight.FlightD
 }
 
 func (s *Server) DoGetTableTypes(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	return s.metadata(ctx, schema_ref.TableTypes, func() (array.RecordReader, error) { return s.eng.TableTypes(ctx) }, false)
+	return s.metadata(ctx, schema_ref.TableTypes, func() (array.RecordReader, error) { return s.eng.TableTypes(ctx) }, 0)
 }
 
 // tablesWithSchema menambahkan kolom table_schema (schema IPC per tabel).
@@ -433,7 +461,7 @@ func (s *Server) tablesWithSchema(ctx context.Context, query func() (array.Recor
 	if err != nil {
 		return nil, nil, toStatus(ctx, err)
 	}
-	recs := s.filterCatalogs(ctx, all)
+	recs := s.filterObjects(ctx, all, 3)
 	releaseAll(all)
 	defer releaseAll(recs)
 	out := make([]arrow.RecordBatch, 0, len(recs))
@@ -464,16 +492,16 @@ func (s *Server) tablesWithSchema(ctx context.Context, query func() (array.Recor
 
 // metadata menjalankan query metadata engine lalu memberi label schema protokol
 // (urutan & tipe kolom dijamin kontrak engine.Engine).
-// byCatalog: kolom 0 = catalog_name → baris catalog yang tidak boleh dibaca
-// pemanggil dibuang (E-03).
-func (s *Server) metadata(ctx context.Context, sch *arrow.Schema, query func() (array.RecordReader, error), byCatalog bool) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+// depth > 0: baris yang objeknya (depth kolom pertama: catalog[.schema[.table]])
+// tidak boleh dilihat pemanggil dibuang (E-03/G-02).
+func (s *Server) metadata(ctx context.Context, sch *arrow.Schema, query func() (array.RecordReader, error), depth int) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	recs, err := collect(query)
 	if err != nil {
 		return nil, nil, toStatus(ctx, err)
 	}
-	if byCatalog {
+	if depth > 0 {
 		all := recs
-		recs = s.filterCatalogs(ctx, all)
+		recs = s.filterObjects(ctx, all, depth)
 		releaseAll(all)
 	}
 	defer releaseAll(recs)

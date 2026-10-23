@@ -76,8 +76,16 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (auth.Identity, error
 	if id.Subject == "" {
 		id.Subject = tok.Subject
 	}
+	id.Attrs = map[string]string{}
+	for k, v := range c {
+		if s, ok := v.(string); ok {
+			id.Attrs[k] = s
+		}
+	}
 	if verified, _ := c["email_verified"].(bool); verified {
 		id.Email = str("email")
+	} else {
+		delete(id.Attrs, "email") // jangan dipakai row filter bila belum terverifikasi
 	}
 	if gs, ok := c[v.cfg.GroupsClaim].([]any); ok {
 		for _, g := range gs {

@@ -1,14 +1,22 @@
-# Policy dev untuk realm Keycloak ini (format spec §5.3 + allowlist E-02).
+# Policy dev untuk realm Keycloak ini (spec §5.3 + allow E-02 + governance G-02..G-06).
 default: deny
 allow:
   domains: [bankmega.com]
 roles:
-  admin:   { catalogs: { "*": [read, write, admin] } }
+  admin:   { catalogs: { "*": [read, write, admin] }, unmask: ["*"] }
   analyst: { catalogs: { warehouse: [read], sandbox: [read, write] } }
+  cabang:
+    catalogs: { warehouse.main.nasabah: [read] }
+    row_filters: { warehouse.main.nasabah: "branch_code = {{claim.branch}}" }
+  ai_sandbox:
+    catalogs: { warehouse: [read], sandbox: [read, write] }
+    select_only: true
+    max_rows: 500
+    max_bytes: 104857600
+    timeout: 60s
 subjects:
-  - match: { claim: groups, equals: data-platform }
-    roles: [admin]
-  - match: { claim: email, endswith: "@bankmega.com" }
-    roles: [analyst]
-  - match: { user: admin }
-    roles: [admin]
+  - { match: { claim: groups, equals: data-platform }, roles: [admin] }
+  - { match: { claim: groups, equals: analyst }, roles: [analyst] }
+  - { match: { claim: groups, equals: cabang }, roles: [cabang] }
+  - { match: { claim: groups, equals: ai-agent }, roles: [ai_sandbox] }
+  - { match: { user: admin }, roles: [admin] }

@@ -5,8 +5,9 @@ image:
 
 auth:
   username: admin
-  # Wajib: Secret berisi key `password` (plaintext atau hash bcrypt) dan
-  # opsional `jwt-secret` (HS256, ≥ 32 byte; tanpa ini token hangus saat restart).
+  # Wajib: Secret berisi key `password` (plaintext atau hash bcrypt), opsional
+  # `jwt-secret` (HS256, ≥ 32 byte; tanpa ini token hangus saat restart) dan
+  # `mask-key` (HMAC mask hash_hmac).
   existingSecret: ""
 
 tls:
@@ -20,6 +21,10 @@ tls:
 # Isi policy.yaml (spec §5.3 + allow). Kosong = hanya user lokal sebagai
 # admin (dev). Perubahan me-restart pod (annotation checksum).
 policy: ""
+
+# Isi classification.yaml (tag kolom + mask, G-03). Mask hash_hmac butuh key
+# `mask-key` (>= 32 byte) di auth.existingSecret.
+classification: ""
 
 oidc:
   issuer: ""            # mis. https://sso.corp/realms/data; wajib policy

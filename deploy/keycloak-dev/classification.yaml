@@ -1,0 +1,9 @@
+# Classification dev (G-03): tag per kolom + mask per tag.
+tags:
+  pii.nik:     { mask: partial, keep_last: 4 }
+  pii.phone:   { mask: hash_hmac }
+  fin.balance: { mask: "null" }
+columns:
+  warehouse.main.nasabah.nik: pii.nik
+  warehouse.main.nasabah.phone: pii.phone
+  warehouse.main.nasabah.saldo: fin.balance

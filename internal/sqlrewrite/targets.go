@@ -6,7 +6,6 @@ package sqlrewrite
 import (
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
 	pg "github.com/pganalyze/pg_query_go/v6"
@@ -123,24 +122,25 @@ func dropTargets(d *pg.DropStmt) ([]Target, error) {
 	return out, nil
 }
 
-// Catalogs memetakan target ke catalog yang ditulis, mengikuti binder DuckDB
-// (BindSchemaOrCatalog): nama 2 bagian "x.obj" → catalog x bila x ter-attach,
-// selain itu schema x di catalog default; x yang sekaligus schema di catalog
-// default ditolak DuckDB sebagai ambigu (dikunci TestBinderCatalogOrSchema).
-func (t Target) Catalogs(defaultCatalog string, all []string) ([]string, error) {
-	n := len(t.Parts)
+// Object nama objek yang ditulis, mengikuti binder DuckDB (Names.Resolve):
+// relasi → "catalog.schema.table", schema (CREATE/DROP SCHEMA) →
+// "catalog.schema"; tabel TEMP → "temp.main.t". Resolusi "x.t" dikunci
+// TestBinderCatalogOrSchema.
+func (t Target) Object(n Names) (string, error) {
+	p := t.Parts
 	switch {
-	case t.Temp:
-		return []string{"temp"}, nil
-	case t.Schema && n == 1, !t.Schema && n == 1:
-		return []string{defaultCatalog}, nil
-	case t.Schema && n == 2, !t.Schema && n == 3:
-		return []string{t.Parts[0]}, nil
-	case !t.Schema && n == 2:
-		if slices.Contains(all, t.Parts[0]) {
-			return []string{t.Parts[0]}, nil
-		}
-		return []string{defaultCatalog}, nil
+	case t.Temp && len(p) == 1:
+		return "temp.main." + p[0], nil
+	case t.Schema && len(p) == 1:
+		return n.DefaultCatalog + "." + p[0], nil
+	case t.Schema && len(p) == 2:
+		return p[0] + "." + p[1], nil
+	case !t.Schema && len(p) == 1:
+		return n.Resolve("", "", p[0]), nil
+	case !t.Schema && len(p) == 2:
+		return n.Resolve("", p[0], p[1]), nil
+	case !t.Schema && len(p) == 3:
+		return n.Resolve(p[0], p[1], p[2]), nil
 	}
-	return nil, fmt.Errorf("sqlrewrite.Catalogs: %w: name %q", ErrUnsupported, strings.Join(t.Parts, "."))
+	return "", fmt.Errorf("sqlrewrite.Object: %w: name %q", ErrUnsupported, strings.Join(p, "."))
 }

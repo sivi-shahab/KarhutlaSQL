@@ -1,0 +1,50 @@
+-- in
+SELECT nik FROM warehouse.nasabah
+-- out
+SELECT nik FROM (SELECT 'x' AS nik FROM warehouse.main.nasabah WHERE ('N0' = 'N0')) AS nasabah
+
+-- in
+SELECT n.nik FROM warehouse.main.nasabah AS n WHERE n.nik = '1'
+-- out
+SELECT n.nik FROM (SELECT 'x' AS nik FROM warehouse.main.nasabah WHERE ('N0' = 'N0')) AS n WHERE (n.nik = '1')
+
+-- in
+FROM warehouse.nasabah SELECT *
+-- out
+SELECT * FROM (SELECT 'x' AS nik FROM warehouse.main.nasabah WHERE ('N0' = 'N0')) AS nasabah
+
+-- in
+SELECT * FROM warehouse.nasabah a JOIN warehouse.nasabah b ON a.nik = b.nik
+-- out
+SELECT * FROM (SELECT 'x' AS nik FROM warehouse.main.nasabah WHERE ('N0' = 'N0')) AS a INNER JOIN (SELECT 'x' AS nik FROM warehouse.main.nasabah WHERE ('N0' = 'N0')) AS b ON ((a.nik = b.nik))
+
+-- in
+SELECT 1 WHERE EXISTS (SELECT 1 FROM warehouse.nasabah)
+-- out
+SELECT 1 WHERE EXISTS(SELECT 1 FROM (SELECT 'x' AS nik FROM warehouse.main.nasabah WHERE ('N0' = 'N0')) AS nasabah)
+
+-- in
+SELECT nik FROM warehouse.nasabah UNION ALL SELECT nik FROM warehouse.nasabah
+-- out
+(SELECT nik FROM (SELECT 'x' AS nik FROM warehouse.main.nasabah WHERE ('N0' = 'N0')) AS nasabah) UNION ALL (SELECT nik FROM (SELECT 'x' AS nik FROM warehouse.main.nasabah WHERE ('N0' = 'N0')) AS nasabah)
+
+-- in
+WITH c AS (SELECT * FROM warehouse.nasabah) SELECT * FROM c
+-- out
+WITH c AS (SELECT * FROM (SELECT 'x' AS nik FROM warehouse.main.nasabah WHERE ('N0' = 'N0')) AS nasabah)SELECT * FROM c
+
+-- in
+WITH nasabah AS (SELECT 1 AS nik) SELECT * FROM nasabah
+-- out
+WITH nasabah AS (SELECT 1 AS nik)SELECT * FROM nasabah
+
+-- in
+SELECT * FROM warehouse.nasabah t(a)
+-- out
+SELECT * FROM (SELECT 'x' AS nik FROM warehouse.main.nasabah WHERE ('N0' = 'N0')) AS t(a)
+
+-- in
+SELECT * FROM memory.main.other
+-- out
+SELECT * FROM memory.main.other
+

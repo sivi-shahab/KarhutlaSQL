@@ -5,7 +5,12 @@ package sqlext
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
+	"database/sql/driver"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +23,7 @@ import (
 
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
+	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/session"
 )
 
@@ -30,6 +36,17 @@ type Deps struct {
 	Sessions *session.Registry
 	Gatherer prometheus.Gatherer
 	Audit    *audit.Logger
+	// MaskKey kunci HMAC-SHA256 untuk mask hash_hmac (G-03); kosong = fungsi
+	// mask menolak semua pemanggilan.
+	MaskKey []byte
+}
+
+type nonceKey struct{}
+
+// WithMaskNonce menandai ctx query dengan nonce rewrite; karhutla_mask_hmac
+// hanya menghitung bila argumen nonce sama (bukan oracle hash bagi user).
+func WithMaskNonce(ctx context.Context, nonce string) context.Context {
+	return context.WithValue(ctx, nonceKey{}, nonce)
 }
 
 // Register mendaftarkan karhutla_sessions(), karhutla_kill_session(id) dan
@@ -45,7 +62,32 @@ func Register(_ context.Context, conn *sql.Conn, d Deps) error {
 			return fmt.Errorf("sqlext.Register: %s: %w", name, err)
 		}
 	}
+	if err := duckdb.RegisterScalarUDF(conn, classification.HMACFunc, hmacUDF{key: d.MaskKey}); err != nil {
+		return fmt.Errorf("sqlext.Register: %s: %w", classification.HMACFunc, err)
+	}
 	return nil
+}
+
+// hmacUDF karhutla_mask_hmac(value VARCHAR, nonce VARCHAR) → hex HMAC-SHA256.
+type hmacUDF struct{ key []byte }
+
+func (hmacUDF) Config() duckdb.ScalarFuncConfig {
+	v, _ := duckdb.NewTypeInfo(duckdb.TYPE_VARCHAR) // tipe primitif: tidak pernah error
+	return duckdb.ScalarFuncConfig{InputTypeInfos: []duckdb.TypeInfo{v, v}, ResultTypeInfo: v}
+}
+
+func (h hmacUDF) Executor() duckdb.ScalarFuncExecutor {
+	return duckdb.ScalarFuncExecutor{RowContextExecutor: func(ctx context.Context, values []driver.Value) (any, error) {
+		want, _ := ctx.Value(nonceKey{}).(string)
+		got, _ := values[1].(string)
+		if len(h.key) == 0 || want == "" || subtle.ConstantTimeCompare([]byte(want), []byte(got)) != 1 {
+			return nil, fmt.Errorf("%w: %s is internal", ErrPermissionDenied, classification.HMACFunc)
+		}
+		v, _ := values[0].(string)
+		m := hmac.New(sha256.New, h.key)
+		m.Write([]byte(v))
+		return hex.EncodeToString(m.Sum(nil)), nil
+	}}
 }
 
 type col struct {

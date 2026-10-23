@@ -2,7 +2,7 @@
 #   export KEYCLOAK_ADMIN_PASSWORD=...   # tidak ada default
 #   docker compose -f deploy/keycloak-dev/compose.yaml up -d
 # Issuer: http://localhost:${KEYCLOAK_PORT:-8080}/realms/karhutlasql
-# User realm (ana, dian, eve) tanpa password: set lewat admin console/API.
+# User realm (ana, dian, eve, budi[branch=0123], agent) tanpa password: set lewat admin console/API.
 services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.3.0

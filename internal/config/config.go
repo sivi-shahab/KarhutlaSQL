@@ -36,6 +36,7 @@ type Config struct {
 	TLSSelfSigned           bool
 
 	PolicyFile                         string
+	ClassificationFile, MaskKeyEnv     string
 	OIDCIssuer, OIDCAudience           string
 	OIDCUsernameClaim, OIDCGroupsClaim string
 
@@ -69,6 +70,8 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.String("tls-cert", "", "sertifikat server PEM")
 	fs.String("tls-key", "", "kunci server PEM (0600)")
 	fs.String("mtls-ca", "", "CA PEM untuk verifikasi client cert (mTLS wajib bila diset)")
+	fs.String("classification-file", "", "classification YAML (tag kolom + mask, G-03); kosong = tanpa mask. Reload: SIGHUP")
+	fs.String("mask-hmac-key-env", "KARHUTLASQL_MASK_KEY", "nama env var berisi kunci HMAC mask hash_hmac (≥ 32 byte)")
 	fs.String("policy-file", "", "policy YAML (spec §5.3); kosong = hanya user lokal sebagai admin (dev). Reload: SIGHUP")
 	fs.String("oidc-issuer", "", "issuer OIDC (Keycloak/Entra/Okta); kosong = OIDC mati")
 	fs.String("oidc-audience", "karhutlasql", "nilai wajib di claim aud token OIDC")
@@ -118,6 +121,8 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		MTLSCA:             v.GetString("mtls-ca"),
 		TLSSelfSigned:      v.GetBool("tls-self-signed"),
 		PolicyFile:         v.GetString("policy-file"),
+		ClassificationFile: v.GetString("classification-file"),
+		MaskKeyEnv:         v.GetString("mask-hmac-key-env"),
 		OIDCIssuer:         v.GetString("oidc-issuer"),
 		OIDCAudience:       v.GetString("oidc-audience"),
 		OIDCUsernameClaim:  v.GetString("oidc-username-claim"),

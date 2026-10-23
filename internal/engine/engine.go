@@ -25,6 +25,11 @@ type Engine interface {
 	// melaporkan apa yang disentuhnya (input keputusan authz). Lebih dari satu
 	// statement → error.
 	Analyze(ctx context.Context, sql string) (Analysis, error)
+	// SerializeSQL / DeserializeSQL: AST JSON engine (untuk rewrite SELECT).
+	SerializeSQL(ctx context.Context, sql string) (string, error)
+	DeserializeSQL(ctx context.Context, ast string) (string, error)
+	// Columns kolom tabel (nama, tipe SQL engine) urut posisi.
+	Columns(ctx context.Context, catalog, schema, table string) ([]Column, error)
 
 	// Catalogs: (catalog_name).
 	Catalogs(ctx context.Context) (array.RecordReader, error)
@@ -64,6 +69,22 @@ type Analysis struct {
 	// catalog ter-attach (resolusi nama target tulis).
 	DefaultCatalog string
 	AllCatalogs    []string
+	// Tables tabel yang dibaca, "catalog.schema.table" huruf kecil.
+	Tables []string
+	// Scans setiap scan tabel di plan logis pra-optimasi beserta ekspresi
+	// FILTER induk langsungnya ("" bila induk bukan FILTER).
+	Scans []Scan
+}
+
+// Scan satu scan tabel di plan.
+type Scan struct {
+	Table        string
+	ParentFilter string
+}
+
+// Column kolom tabel.
+type Column struct {
+	Name, Type string
 }
 
 // TableFilter filter untuk Engine.Tables. Pattern memakai sintaks LIKE; nil = semua.

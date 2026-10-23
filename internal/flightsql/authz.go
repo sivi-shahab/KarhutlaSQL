@@ -2,7 +2,10 @@ package flightsql
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/authz"
+	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/sqlrewrite"
 )
@@ -25,14 +29,25 @@ var safeFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST", "KARHUTLA_SES
 // writeKinds statement yang target tulisnya ditentukan sqlrewrite.
 var writeKinds = []string{"INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"}
 
-// needs menurunkan izin yang dibutuhkan statement: read per catalog yang
-// dibaca (binder DuckDB), write per catalog target (parser), admin global
-// untuk operasi sistem dan table function selain safeFunctions.
+// plan hasil otorisasi: SQL yang benar-benar dieksekusi dan batasnya.
+type plan struct {
+	sql    string // SQL asli, atau hasil rewrite masking/RLS/LIMIT
+	nonce  string // nonce rewrite (ctx karhutla_mask_hmac); "" bila tidak ada
+	limits authz.Limits
+}
+
+func names(a engine.Analysis) sqlrewrite.Names {
+	return sqlrewrite.Names{DefaultCatalog: a.DefaultCatalog, Catalogs: a.AllCatalogs}
+}
+
+// needs menurunkan izin yang dibutuhkan statement: read per tabel yang dibaca
+// (binder DuckDB), write per objek target (parser), admin global untuk
+// operasi sistem dan table function selain safeFunctions.
 func needs(a engine.Analysis, sql string) ([]authz.Need, error) {
 	var out []authz.Need
-	global := authz.Need{Catalog: authz.AnyCatalog, Action: authz.Admin}
-	for _, c := range a.Catalogs {
-		out = append(out, authz.Need{Catalog: c, Action: authz.Read})
+	global := authz.Need{Object: authz.AnyCatalog, Action: authz.Admin}
+	for _, t := range a.Tables {
+		out = append(out, authz.Need{Object: t, Action: authz.Read})
 	}
 	for _, f := range a.Functions {
 		if !slices.Contains(safeFunctions, f) {
@@ -48,13 +63,11 @@ func needs(a engine.Analysis, sql string) ([]authz.Need, error) {
 			return nil, err
 		}
 		for _, t := range targets {
-			cats, err := t.Catalogs(a.DefaultCatalog, a.AllCatalogs)
+			obj, err := t.Object(names(a))
 			if err != nil {
 				return nil, err
 			}
-			for _, c := range cats {
-				out = append(out, authz.Need{Catalog: c, Action: authz.Write})
-			}
+			out = append(out, authz.Need{Object: obj, Action: authz.Write})
 		}
 	default: // EXPLAIN, COPY, ATTACH, SET, PRAGMA, CALL, LOAD, EXPORT, PREPARE, ...
 		out = append(out, global)
@@ -62,21 +75,10 @@ func needs(a engine.Analysis, sql string) ([]authz.Need, error) {
 	return out, nil
 }
 
-// authorize menegakkan policy untuk sql sebelum prepare/eksekusi.
-func (s *Server) authorize(ctx context.Context, sql string) error {
+// deny mencatat authz_deny dan mengembalikan PERMISSION_DENIED.
+func (s *Server) deny(ctx context.Context, kind, sql string, err error) error {
 	id, _ := auth.FromContext(ctx)
-	a, err := s.eng.Analyze(ctx, sql)
-	if err != nil {
-		return toStatus(ctx, err)
-	}
-	ns, err := needs(a, sql)
-	if err == nil {
-		err = s.opts.Policy.Policy().Check(id.Roles, ns)
-	}
-	if err == nil {
-		return nil
-	}
-	ev := audit.Event{Type: audit.AuthzDeny, User: id.Subject, Source: id.Source, Kind: a.Kind, Error: err.Error()}
+	ev := audit.Event{Type: audit.AuthzDeny, User: id.Subject, Source: id.Source, Kind: kind, Error: err.Error()}
 	s.opts.Audit.SQL(&ev, sql)
 	s.opts.Audit.Emit(ctx, ev)
 	var de *authz.DenyError
@@ -86,46 +88,185 @@ func (s *Server) authorize(ctx context.Context, sql string) error {
 	return status.Errorf(codes.PermissionDenied, "permission denied: %v", err)
 }
 
-// readable melaporkan apakah pemanggil boleh membaca catalog (filter metadata).
-func (s *Server) readable(ctx context.Context, catalog string) bool {
+// authorize menegakkan policy untuk sql sebelum prepare/eksekusi dan
+// mengembalikan SQL yang harus dieksekusi (masking/RLS/LIMIT, G-02…G-06).
+func (s *Server) authorize(ctx context.Context, sql string) (plan, error) {
 	id, _ := auth.FromContext(ctx)
-	return s.opts.Policy.Policy().Check(id.Roles, []authz.Need{{Catalog: strings.ToLower(catalog), Action: authz.Read}}) == nil
+	a, err := s.eng.Analyze(ctx, sql)
+	if err != nil {
+		return plan{}, toStatus(ctx, err)
+	}
+	p := s.opts.Policy.Policy()
+	pl := plan{sql: sql, limits: p.LimitsFor(id.Roles)}
+	if pl.limits.SelectOnly && a.Kind != "SELECT" {
+		return plan{}, s.deny(ctx, a.Kind, sql, errors.New("role is SELECT-only"))
+	}
+	ns, err := needs(a, sql)
+	if err == nil {
+		err = p.Check(id.Roles, ns)
+	}
+	if err != nil {
+		return plan{}, s.deny(ctx, a.Kind, sql, err)
+	}
+	if err := s.govern(ctx, &pl, a, p, id); err != nil {
+		return plan{}, s.deny(ctx, a.Kind, sql, err)
+	}
+	if pl.limits.MaxRows > 0 && a.Kind == "SELECT" {
+		wrapped := fmt.Sprintf("SELECT * FROM (\n%s\n) LIMIT %d", pl.sql, pl.limits.MaxRows)
+		// Pastikan pembungkus tetap satu SELECT (mis. sql diakhiri ";").
+		wa, err := s.eng.Analyze(ctx, wrapped)
+		if err == nil && wa.Kind != "SELECT" {
+			err = errors.New("not a single SELECT")
+		}
+		if err != nil {
+			return plan{}, s.deny(ctx, a.Kind, sql, fmt.Errorf("cannot apply row limit: %w", err))
+		}
+		pl.sql = wrapped
+	}
+	return pl, nil
 }
 
-// filterCatalogs membuang baris metadata (kolom 0 = catalog_name, semua kolom
-// string) yang catalog-nya tidak boleh dibaca pemanggil.
-func (s *Server) filterCatalogs(ctx context.Context, recs []arrow.RecordBatch) []arrow.RecordBatch {
+// govern mengganti setiap tabel yang ber-mask/RLS bagi identitas dengan
+// subquery terlindung lalu memverifikasi lewat plan DuckDB bahwa tidak ada
+// scan tabel itu di luar subquery (fail-closed: view, sintaks tak didukung,
+// referensi terlewat → tolak).
+func (s *Server) govern(ctx context.Context, pl *plan, a engine.Analysis, p *authz.Policy, id auth.Identity) error {
+	cls := s.opts.Classification.Get()
+	nonce := newNonce()
+	guard := classification.Literal(nonce) + " = " + classification.Literal(nonce)
+	subs := map[string]string{}
+	for _, t := range a.Tables {
+		tags := cls.TableTags(t)
+		masked := map[string]classification.Mask{}
+		for col, tag := range tags {
+			if !p.Unmasked(id.Roles, tag) {
+				masked[col] = cls.Tags[tag]
+			}
+		}
+		pred, filtered, err := p.RowFilter(id.Roles, t, id.Attrs)
+		if err != nil {
+			return err
+		}
+		if len(masked) == 0 && !filtered {
+			continue
+		}
+		sub, err := s.subselect(ctx, t, masked, pred, guard, nonce)
+		if err != nil {
+			return err
+		}
+		subs[t] = sub
+	}
+	if len(subs) == 0 {
+		return nil
+	}
+	if a.Kind != "SELECT" {
+		return fmt.Errorf("%s reads masked or row-filtered data; only SELECT can be rewritten", a.Kind)
+	}
+	out, _, err := sqlrewrite.Substitute(ctx, s.eng, pl.sql, names(a), subs)
+	if err != nil {
+		return fmt.Errorf("%w (use standard SQL on governed tables)", err)
+	}
+	ra, err := s.eng.Analyze(ctx, out)
+	if err != nil {
+		return fmt.Errorf("%w: rewritten query invalid: %w", sqlrewrite.ErrRewrite, err)
+	}
+	for _, sc := range ra.Scans {
+		if _, governed := subs[sc.Table]; governed && !strings.Contains(sc.ParentFilter, nonce) {
+			return fmt.Errorf("%w: %s is referenced in a way that bypasses masking/row filter (e.g. through a view)", sqlrewrite.ErrRewrite, sc.Table)
+		}
+	}
+	for _, t := range ra.Tables {
+		if !slices.Contains(a.Tables, t) {
+			return fmt.Errorf("%w: rewrite changed table set (%s)", sqlrewrite.ErrRewrite, t)
+		}
+	}
+	pl.sql, pl.nonce = out, nonce
+	return nil
+}
+
+// subselect SELECT pengganti tabel: semua kolom (yang bertag di-mask), row
+// filter, dan guard nonce di FILTER tepat di atas scan.
+func (s *Server) subselect(ctx context.Context, table string, masked map[string]classification.Mask, pred, guard, nonce string) (string, error) {
+	parts := strings.Split(table, ".")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("%w: table name %q", sqlrewrite.ErrRewrite, table)
+	}
+	cols, err := s.eng.Columns(ctx, parts[0], parts[1], parts[2])
+	if err == nil && len(cols) == 0 {
+		err = errors.New("no columns")
+	}
+	if err != nil {
+		return "", fmt.Errorf("%w: columns of %s: %w", sqlrewrite.ErrRewrite, table, err)
+	}
+	exprs := make([]string, len(cols))
+	for i, c := range cols {
+		ident := classification.Ident(c.Name)
+		if m, ok := masked[strings.ToLower(c.Name)]; ok {
+			exprs[i] = m.Expr(ident, c.Type, nonce) + " AS " + ident
+		} else {
+			exprs[i] = ident
+		}
+	}
+	if pred == "" {
+		pred = "TRUE"
+	}
+	return fmt.Sprintf("SELECT %s FROM %s.%s.%s WHERE (%s) AND (%s)", strings.Join(exprs, ", "),
+		classification.Ident(parts[0]), classification.Ident(parts[1]), classification.Ident(parts[2]), pred, guard), nil
+}
+
+func newNonce() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b) // crypto/rand.Read tidak pernah gagal (Go ≥ 1.24)
+	return "kg" + hex.EncodeToString(b)
+}
+
+// visible melaporkan apakah objek metadata boleh tampil bagi pemanggil.
+func (s *Server) visible(ctx context.Context, object string) bool {
+	id, _ := auth.FromContext(ctx)
+	return s.opts.Policy.Policy().Visible(id.Roles, strings.ToLower(object))
+}
+
+// filterObjects membuang baris metadata (semua kolom string) yang objeknya
+// — gabungan depth kolom pertama: catalog / catalog.schema /
+// catalog.schema.table — tidak boleh dilihat pemanggil.
+func (s *Server) filterObjects(ctx context.Context, recs []arrow.RecordBatch, depth int) []arrow.RecordBatch {
 	out := make([]arrow.RecordBatch, 0, len(recs))
 	for _, rec := range recs {
-		cat, ok := rec.Column(0).(*array.String)
-		if !ok {
-			continue // kontrak engine dilanggar → buang, jangan bocorkan
+		cols := make([]*array.String, rec.NumCols())
+		for i := range cols {
+			cols[i], _ = rec.Column(i).(*array.String)
 		}
 		builders := make([]*array.StringBuilder, rec.NumCols())
 		for i := range builders {
 			builders[i] = array.NewStringBuilder(s.Alloc)
 		}
 		for r := range int(rec.NumRows()) {
-			if cat.IsNull(r) || !s.readable(ctx, cat.Value(r)) {
-				continue
+			key := make([]string, 0, depth)
+			for i := 0; i < depth && i < len(cols); i++ {
+				if cols[i] == nil || cols[i].IsNull(r) {
+					break
+				}
+				key = append(key, cols[i].Value(r))
+			}
+			if len(key) != depth || !s.visible(ctx, strings.Join(key, ".")) {
+				continue // kontrak engine dilanggar atau tidak boleh dilihat → buang
 			}
 			for c, b := range builders {
-				col, _ := rec.Column(c).(*array.String)
-				if col == nil || col.IsNull(r) {
+				if cols[c] == nil || cols[c].IsNull(r) {
 					b.AppendNull()
 				} else {
-					b.Append(col.Value(r))
+					b.Append(cols[c].Value(r))
 				}
 			}
 		}
-		cols := make([]arrow.Array, len(builders))
+		arrs := make([]arrow.Array, len(builders))
 		for i, b := range builders {
-			cols[i] = b.NewArray()
+			arrs[i] = b.NewArray()
 			b.Release()
 		}
-		out = append(out, array.NewRecordBatch(rec.Schema(), cols, int64(cols[0].Len())))
-		for _, c := range cols {
-			c.Release()
+		out = append(out, array.NewRecordBatch(rec.Schema(), arrs, int64(arrs[0].Len())))
+		for _, a := range arrs {
+			a.Release()
 		}
 	}
 	return out

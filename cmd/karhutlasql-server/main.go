@@ -28,6 +28,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/auth/local"
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
 	"github.com/bankmega/karhutlasql/internal/authz"
+	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/config"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
@@ -123,18 +124,23 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}
 	}
 
+	cls, maskKey, err := newClassification(cfg)
+	if err != nil {
+		return err
+	}
+
 	sessions := session.NewRegistry(cfg.SessionIdleTimeout)
 	m := metrics.New(sessions.Counts)
 	eng, err := duckdb.Open(ctx, duckdb.Config{Path: cfg.DatabaseFilename, InitSQL: initSQL,
 		Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: auditLog})
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, MaskKey: maskKey})
 		}})
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, eng.Close()) }()
 
-	srv, err := flightsql.New(eng, log, flightsql.Options{QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m, Policy: policy})
+	srv, err := flightsql.New(eng, log, flightsql.Options{QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m, Policy: policy, Classification: cls})
 	if err != nil {
 		return err
 	}
@@ -176,7 +182,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		cancel()
 	}()
 	go sessions.Run(ctx, time.Minute)
-	go reloadOnSIGHUP(ctx, policy, auditLog, log)
+	go reloadOnSIGHUP(ctx, auditLog, log, policy, cls)
 	n := 1
 	if adminLis != nil {
 		n++
@@ -197,8 +203,24 @@ func newPolicy(cfg config.Config, log *slog.Logger) (*authz.Store, error) {
 	return authz.Load(cfg.PolicyFile)
 }
 
-// reloadOnSIGHUP memuat ulang policy; file tidak valid → policy lama tetap.
-func reloadOnSIGHUP(ctx context.Context, p *authz.Store, a *audit.Logger, log *slog.Logger) {
+func newClassification(cfg config.Config) (*classification.Store, []byte, error) {
+	cls, err := classification.Load(cfg.ClassificationFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	key := []byte(os.Getenv(cfg.MaskKeyEnv))
+	if cls.Get().UsesHMAC() && len(key) < 32 {
+		return nil, nil, fmt.Errorf("main.newClassification: hash_hmac masks need env %s with >= 32 bytes", cfg.MaskKeyEnv)
+	}
+	return cls, key, nil
+}
+
+// reloader policy/classification yang bisa dimuat ulang.
+type reloader interface{ Reload() error }
+
+// reloadOnSIGHUP memuat ulang policy & classification; file tidak valid →
+// versi lama tetap aktif.
+func reloadOnSIGHUP(ctx context.Context, a *audit.Logger, log *slog.Logger, stores ...reloader) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP)
 	defer signal.Stop(ch)
@@ -208,7 +230,11 @@ func reloadOnSIGHUP(ctx context.Context, p *authz.Store, a *audit.Logger, log *s
 			return
 		case <-ch:
 			ev := audit.Event{Type: audit.PolicyReload, Status: "OK"}
-			if err := p.Reload(); err != nil {
+			var errs []error
+			for _, s := range stores {
+				errs = append(errs, s.Reload())
+			}
+			if err := errors.Join(errs...); err != nil {
 				ev.Status, ev.Error = "FAILED", err.Error()
 				log.Error("policy reload failed; keeping previous policy", "err", err)
 			} else {

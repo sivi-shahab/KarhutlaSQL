@@ -22,6 +22,8 @@ type Identity struct {
 	// TokenID (jti) = ID sesi; kunci revocation (kill session).
 	TokenID   string
 	ExpiresAt time.Time
+	// Attrs claim string token OIDC (placeholder row filter {{claim.x}}).
+	Attrs map[string]string
 }
 
 // RoleAdmin boleh melihat semua sesi dan kill session.

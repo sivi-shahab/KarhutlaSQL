@@ -98,25 +98,36 @@ func (e *Engine) Analyze(ctx context.Context, query string) (engine.Analysis, er
 	if _, err := c.ExecContext(ctx, "SET explain_output = 'all'", nil); err != nil {
 		return engine.Analysis{}, fmt.Errorf("duckdb.Analyze: %w", err)
 	}
-	plans, err := queryStrings(ctx, c, "EXPLAIN (FORMAT json) "+query, make([]any, nparams), 1)
+	plans, err := queryRows(ctx, c, "EXPLAIN (FORMAT json) "+query, make([]any, nparams))
 	if err != nil {
 		return engine.Analysis{}, fmt.Errorf("duckdb.Analyze: %w", err)
 	}
-	for _, p := range plans {
+	for _, p := range plans { // (explain_key, explain_value)
 		var nodes []planNode
-		if err := json.Unmarshal([]byte(p), &nodes); err != nil {
+		if err := json.Unmarshal([]byte(p[1]), &nodes); err != nil {
 			return engine.Analysis{}, fmt.Errorf("duckdb.Analyze: plan: %w", err)
 		}
 		for _, n := range nodes {
-			walk(&a, n)
+			walk(&a, n, nil, p[0] == "logical_plan")
 		}
 	}
 	return a, nil
 }
 
-func walk(a *engine.Analysis, n planNode) {
+// walk mengumpulkan catalog/tabel/fungsi; scan di plan logis pra-optimasi
+// dicatat beserta ekspresi FILTER induk langsungnya (verifikasi rewrite).
+func walk(a *engine.Analysis, n planNode, parent *planNode, logical bool) {
 	switch table, _ := n.ExtraInfo["Table"].(string); {
 	case table != "":
+		table = strings.ToLower(table)
+		addUnique(&a.Tables, table)
+		if logical {
+			sc := engine.Scan{Table: table}
+			if parent != nil && parent.Name == "FILTER" {
+				sc.ParentFilter = exprText(parent.ExtraInfo["Expressions"])
+			}
+			a.Scans = append(a.Scans, sc)
+		}
 		// "catalog.schema.table" tanpa kutip: cocokkan prefix dengan catalog
 		// yang ada (nama catalog bisa mengandung titik); ambigu → semua.
 		matched := false
@@ -133,8 +144,23 @@ func walk(a *engine.Analysis, n planNode) {
 		addUnique(&a.Functions, n.Name)
 	}
 	for _, c := range n.Children {
-		walk(a, c)
+		walk(a, c, &n, logical)
 	}
+}
+
+func exprText(v any) string {
+	switch e := v.(type) {
+	case string:
+		return e
+	case []any:
+		parts := make([]string, 0, len(e))
+		for _, x := range e {
+			s, _ := x.(string)
+			parts = append(parts, s)
+		}
+		return strings.Join(parts, " AND ")
+	}
+	return ""
 }
 
 func addUnique(list *[]string, v string) {
@@ -145,17 +171,21 @@ func addUnique(list *[]string, v string) {
 
 // catalogs mengembalikan catalog default dan semua catalog (huruf kecil).
 func catalogs(ctx context.Context, c *duckdbdrv.Conn) (string, []string, error) {
-	def, err := queryStrings(ctx, c, "SELECT lower(current_database())", nil, 0)
+	def, err := queryRows(ctx, c, "SELECT lower(current_database())", nil)
 	if err != nil || len(def) != 1 {
 		return "", nil, errors.Join(errors.New("current_database"), err)
 	}
-	all, err := queryStrings(ctx, c, "SELECT lower(database_name) FROM duckdb_databases()", nil, 0)
-	return def[0], all, err
+	rows, err := queryRows(ctx, c, "SELECT lower(database_name) FROM duckdb_databases()", nil)
+	all := make([]string, len(rows))
+	for i, r := range rows {
+		all[i] = r[0]
+	}
+	return def[0][0], all, err
 }
 
-// queryStrings menjalankan satu statement (Prepare menolak multi-statement)
-// dan mengembalikan kolom col setiap baris sebagai string.
-func queryStrings(ctx context.Context, c *duckdbdrv.Conn, query string, args []any, col int) ([]string, error) {
+// queryRows menjalankan satu statement (Prepare menolak multi-statement) dan
+// mengembalikan setiap baris sebagai string (kolom non-string → "").
+func queryRows(ctx context.Context, c *duckdbdrv.Conn, query string, args []any) ([][]string, error) {
 	ds, err := c.Prepare(query)
 	if err != nil {
 		return nil, err
@@ -167,7 +197,7 @@ func queryStrings(ctx context.Context, c *duckdbdrv.Conn, query string, args []a
 	}
 	defer func() { _ = rows.Close() }()
 	dest := make([]driver.Value, len(rows.Columns()))
-	var out []string
+	var out [][]string
 	for {
 		if err := rows.Next(dest); err != nil {
 			if errors.Is(err, io.EOF) {
@@ -175,7 +205,56 @@ func queryStrings(ctx context.Context, c *duckdbdrv.Conn, query string, args []a
 			}
 			return nil, err
 		}
-		v, _ := dest[col].(string)
-		out = append(out, v)
+		row := make([]string, len(dest))
+		for i, v := range dest {
+			row[i], _ = v.(string)
+		}
+		out = append(out, row)
 	}
+}
+
+// SerializeSQL lihat engine.Engine (AST JSON DuckDB; SELECT saja).
+func (e *Engine) SerializeSQL(ctx context.Context, query string) (string, error) {
+	return e.scalarString(ctx, "SELECT json_serialize_sql($1::VARCHAR)::VARCHAR", query)
+}
+
+// DeserializeSQL lihat engine.Engine.
+func (e *Engine) DeserializeSQL(ctx context.Context, ast string) (string, error) {
+	return e.scalarString(ctx, "SELECT json_deserialize_sql($1::JSON)", ast)
+}
+
+// Columns lihat engine.Engine.
+func (e *Engine) Columns(ctx context.Context, catalog, schema, table string) ([]engine.Column, error) {
+	c, err := e.conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("duckdb.Columns: %w", err)
+	}
+	defer func() { _ = c.Close() }()
+	rows, err := queryRows(ctx, c, `SELECT column_name, data_type FROM information_schema.columns
+		WHERE lower(table_catalog) = lower($1) AND lower(table_schema) = lower($2) AND lower(table_name) = lower($3)
+		ORDER BY ordinal_position`, []any{catalog, schema, table})
+	if err != nil {
+		return nil, fmt.Errorf("duckdb.Columns: %w", err)
+	}
+	cols := make([]engine.Column, len(rows))
+	for i, r := range rows {
+		cols[i] = engine.Column{Name: r[0], Type: r[1]}
+	}
+	return cols, nil
+}
+
+func (e *Engine) scalarString(ctx context.Context, query string, arg string) (string, error) {
+	c, err := e.conn(ctx)
+	if err != nil {
+		return "", fmt.Errorf("duckdb: %w", err)
+	}
+	defer func() { _ = c.Close() }()
+	rows, err := queryRows(ctx, c, query, []any{arg})
+	if err != nil {
+		return "", fmt.Errorf("duckdb: %w", err)
+	}
+	if len(rows) != 1 {
+		return "", fmt.Errorf("duckdb: %d rows", len(rows))
+	}
+	return rows[0][0], nil
 }

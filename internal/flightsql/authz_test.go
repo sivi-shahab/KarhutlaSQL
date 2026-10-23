@@ -132,7 +132,7 @@ type fakeIdP struct {
 	key *rsa.PrivateKey
 }
 
-func newIdP(t *testing.T) *fakeIdP {
+func newIdP(t testing.TB) *fakeIdP {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -155,7 +155,7 @@ func newIdP(t *testing.T) *fakeIdP {
 	return idp
 }
 
-func (i *fakeIdP) token(t *testing.T, claims jwt.MapClaims) string {
+func (i *fakeIdP) token(t testing.TB, claims jwt.MapClaims) string {
 	t.Helper()
 	base := jwt.MapClaims{"iss": i.srv.URL, "aud": "karhutlasql", "exp": time.Now().Add(time.Hour).Unix(),
 		"iat": time.Now().Unix(), "sub": "u1", "sid": "sid-1", "email_verified": true}

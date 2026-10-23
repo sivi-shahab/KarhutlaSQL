@@ -1,0 +1,1 @@
+SELECT * FROM nation POSITIONAL JOIN region

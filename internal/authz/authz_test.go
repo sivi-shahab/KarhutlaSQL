@@ -116,3 +116,86 @@ func TestStore_ReloadKeepsOldOnError(t *testing.T) {
 		t.Fatalf("valid reload: err=%v", err)
 	}
 }
+
+const govPolicy = `
+default: deny
+roles:
+  analyst:
+    catalogs: { warehouse: [read], "sandbox.main": [read, write], "hr.main.gaji": [read] }
+    unmask: [pii.phone]
+  cabang:
+    catalogs: { warehouse.main.nasabah: [read] }
+    row_filters: { warehouse.main.nasabah: "branch_code = {{claim.branch}}" }
+  pusat:
+    catalogs: { warehouse: [read] }
+  ai_sandbox:
+    catalogs: { warehouse: [read] }
+    select_only: true
+    max_rows: 500
+    timeout: 30s
+  batch:
+    catalogs: {}
+    max_rows: 10000
+    max_bytes: 1048576
+subjects:
+  - { match: { user: x }, roles: [analyst, cabang, pusat, ai_sandbox, batch] }
+`
+
+func TestPolicy_Governance(t *testing.T) {
+	p, err := Parse([]byte(govPolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// G-02: izin di level schema/table.
+	for _, tt := range []struct {
+		need Need
+		ok   bool
+	}{
+		{Need{"sandbox.main.t", Write}, true},
+		{Need{"sandbox.other.t", Write}, false},
+		{Need{"hr.main.gaji", Read}, true},
+		{Need{"hr.main.cuti", Read}, false},
+		{Need{"hr", Read}, false},
+	} {
+		if err := p.Check([]string{"analyst"}, []Need{tt.need}); (err == nil) != tt.ok {
+			t.Errorf("%v: %v", tt.need, err)
+		}
+	}
+	if !p.Visible([]string{"analyst"}, "hr") || !p.Visible([]string{"analyst"}, "hr.main") || p.Visible([]string{"analyst"}, "finance") {
+		t.Error("Visible")
+	}
+	if !p.Unmasked([]string{"analyst"}, "pii.phone") || p.Unmasked([]string{"analyst"}, "pii.nik") {
+		t.Error("Unmasked")
+	}
+
+	// G-04: filter hanya bila semua role pemberi izin punya filter.
+	pred, filtered, err := p.RowFilter([]string{"cabang"}, "warehouse.main.nasabah", map[string]string{"branch": "01'23"})
+	if err != nil || !filtered || pred != "(branch_code = '01''23')" {
+		t.Errorf("cabang filter = %q %v %v", pred, filtered, err)
+	}
+	if _, filtered, _ := p.RowFilter([]string{"cabang", "pusat"}, "warehouse.main.nasabah", nil); filtered {
+		t.Error("pusat (unfiltered grant) should lift the filter")
+	}
+	if _, _, err := p.RowFilter([]string{"cabang"}, "warehouse.main.nasabah", map[string]string{}); err == nil {
+		t.Error("missing claim accepted")
+	}
+	if _, _, err := p.RowFilter([]string{"cabang"}, "warehouse.main.other", nil); err == nil {
+		t.Error("filter without read grant")
+	}
+
+	// G-06: pembatasan paling ketat.
+	l := p.LimitsFor([]string{"ai_sandbox", "batch", "analyst"})
+	if !l.SelectOnly || l.MaxRows != 500 || l.MaxBytes != 1048576 || l.Timeout.Seconds() != 30 {
+		t.Errorf("limits = %+v", l)
+	}
+	for _, y := range []string{
+		"default: deny\nroles: { r: { catalogs: { a.b.c.d: [read] } } }",
+		"default: deny\nroles: { r: { row_filters: { t: x } } }",
+		"default: deny\nroles: { r: { row_filters: { a.b.c: '{{user.x}} = 1' } } }",
+		"default: deny\nroles: { r: { max_rows: -1 } }",
+	} {
+		if _, err := Parse([]byte(y)); err == nil {
+			t.Errorf("Parse(%q) accepted", y)
+		}
+	}
+}

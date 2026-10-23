@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"golang.org/x/term"
 	"google.golang.org/grpc/status"
 
+	"github.com/bankmega/karhutlasql/internal/report"
 	"github.com/bankmega/karhutlasql/internal/version"
 	"github.com/bankmega/karhutlasql/pkg/client"
 	"github.com/bankmega/karhutlasql/pkg/client/oauth"
@@ -49,6 +51,9 @@ type options struct {
 	oidcLogin bool
 	browser   bool
 	tokenFile string
+
+	verify    string // manifest.json report (G-10)
+	publicKey string
 }
 
 func run(ctx context.Context, args []string, stdin *os.File, stdout, stderr io.Writer) int {
@@ -83,6 +88,8 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout, stderr io.W
 	fs.StringVar(&o.oidc.ClientID, "oidc-client-id", "karhutlasql", "client ID OIDC (public client)")
 	fs.BoolVar(&o.oidcLogin, "oidc-login", false, "login SSO baru (Device Code; --browser = Auth Code + PKCE) lalu simpan token")
 	fs.BoolVar(&o.browser, "browser", false, "dengan --oidc-login: login lewat browser (PKCE) alih-alih device code")
+	fs.StringVar(&o.verify, "verify", "", "verifikasi report: path manifest.json (tanda tangan + hash result di direktori yang sama), tanpa koneksi server")
+	fs.StringVar(&o.publicKey, "public-key", "", "dengan --verify: kunci publik Ed25519 PEM server")
 	fs.StringVar(&o.tokenFile, "token-file", filepath.Join(home, ".karhutlasql", "token.json"), "file token SSO (0600)")
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
@@ -95,6 +102,9 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout, stderr io.W
 }
 
 func (o *options) run(ctx context.Context, stdin *os.File, stdout, stderr io.Writer) error {
+	if o.verify != "" {
+		return verifyReport(o.verify, o.publicKey, stdout)
+	}
 	if !slices.Contains(formats, o.format) {
 		return fmt.Errorf("--format %q: want one of %v", o.format, formats)
 	}
@@ -359,4 +369,46 @@ func openHistory(t *term.Terminal, path string) (*os.File, error) {
 		}
 	}
 	return f, nil
+}
+
+// verifyReport memeriksa manifest.json(.sig) dan file hasil di sebelahnya.
+func verifyReport(manifestPath, pubPath string, out io.Writer) error {
+	if pubPath == "" {
+		return errors.New("--verify requires --public-key")
+	}
+	read := func(p string) ([]byte, error) { return os.ReadFile(filepath.Clean(p)) }
+	pemBytes, err := read(pubPath)
+	if err != nil {
+		return err
+	}
+	pub, err := report.ParsePublicKey(pemBytes)
+	if err != nil {
+		return err
+	}
+	manifest, err := read(manifestPath)
+	if err != nil {
+		return err
+	}
+	sig, err := read(manifestPath + ".sig")
+	if err != nil {
+		return err
+	}
+	var hdr report.Manifest
+	if err := json.Unmarshal(manifest, &hdr); err != nil {
+		return fmt.Errorf("manifest: %w", err)
+	}
+	if hdr.Result.File == "" || filepath.Base(hdr.Result.File) != hdr.Result.File {
+		return fmt.Errorf("manifest: invalid result file %q", hdr.Result.File)
+	}
+	result, err := read(filepath.Join(filepath.Dir(manifestPath), hdr.Result.File))
+	if err != nil {
+		return err
+	}
+	m, err := report.Verify(manifest, sig, result, pub)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out, "OK report %s (%s) by %s at %s\nsnapshot %s, %d rows, result sha256 %s, key %s\n",
+		m.ReportID, m.Name, m.User, m.FinishedAt.Format(time.RFC3339), m.SnapshotID, m.Result.Rows, m.Result.SHA256, m.KeyID)
+	return nil
 }

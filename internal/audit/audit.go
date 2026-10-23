@@ -24,6 +24,12 @@ const (
 	SessionKilled  = "session_killed"
 	AuthzDeny      = "authz_deny"
 	PolicyReload   = "policy_reload"
+	// Governance (Fase 6b).
+	MaskApplied         = "mask_applied"
+	RowFilterApplied    = "row_filter_applied"
+	PolicyChange        = "policy_change"
+	ReportRun           = "report_run"
+	AccessHistoryExport = "access_history_export"
 )
 
 // Event satu baris audit (JSON). Field kosong dihilangkan.
@@ -43,7 +49,10 @@ type Event struct {
 	DurationMS int64     `json:"duration_ms,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	Target     string    `json:"target,omitempty"` // session_killed: ID sesi yang dimatikan
-	Via        string    `json:"via,omitempty"`    // session_killed: sql | http
+	Via        string    `json:"via,omitempty"`    // session_killed: sql | http | action
+	Object     string    `json:"object,omitempty"` // tabel / dokumen policy / report
+	Detail     string    `json:"detail,omitempty"` // mask per kolom, predikat row filter, ...
+	Hash       string    `json:"hash,omitempty"`   // sha256 isi policy / manifest report
 }
 
 // Sink tujuan event audit. Emit harus aman dipanggil konkuren.

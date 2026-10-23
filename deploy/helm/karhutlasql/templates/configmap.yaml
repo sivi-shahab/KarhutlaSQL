@@ -1,4 +1,4 @@
-{{- if or .Values.policy .Values.classification }}
+{{- if or .Values.policy .Values.classification .Values.reports }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,6 +11,10 @@ data:
   {{- end }}
   {{- with .Values.classification }}
   classification.yaml: |
+    {{- . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.reports }}
+  reports.yaml: |
     {{- . | nindent 4 }}
   {{- end }}
 {{- end }}

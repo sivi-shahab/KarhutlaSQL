@@ -25,12 +25,17 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | github.com/spf13/pflag | BSD-3-Clause | Flag (dependensi cobra/viper) |
 | go.yaml.in/yaml/v3 | MIT / Apache-2.0 | Policy file (strict decode) |
 | golang.org/x/crypto | BSD-3-Clause | bcrypt |
-| golang.org/x/time | BSD-3-Clause | Rate limiter |
+| golang.org/x/time | BSD-3-Clause | *(tidak dipakai: rate limit memakai token bucket sendiri, ADR 26)* |
 | github.com/google/uuid | BSD-3-Clause | Session/statement ID |
 | golang.org/x/term | BSD-3-Clause | REPL klien (line editing, history, prompt password) |
 | github.com/pganalyze/pg_query_go/v6 | BSD-3-Clause; libpg_query terbundel: BSD-3-Clause + PostgreSQL License (permisif, setara MIT/BSD) | Target tulis statement DML/DDL untuk authz (Fase 5, ADR 21); kandidat parser rewriter Fase 5b |
 | github.com/apache/arrow-go/v18/parquet | Apache-2.0 | Writer access-history Parquet |
-| github.com/minio/minio-go/v7 | Apache-2.0 | Upload access-history ke MinIO (object-lock) |
+| github.com/minio/minio-go/v7 | Apache-2.0 | Arsip access-history & report ke S3/MinIO (object-lock COMPLIANCE, ADR 27) |
+| github.com/minio/md5-simd, github.com/minio/crc64nvme, github.com/go-ini/ini | Apache-2.0 | Dependensi minio-go |
+| github.com/rs/xid, github.com/tinylib/msgp, github.com/philhofer/fwd, github.com/dustin/go-humanize | MIT | Dependensi minio-go |
+| github.com/apache/thrift | Apache-2.0 | Dependensi arrow-go/parquet (metadata Parquet) |
+| github.com/andybalholm/brotli | MIT | Dependensi arrow-go/parquet (codec) |
+| golang.org/x/sync | BSD-3-Clause | Dependensi arrow-go/parquet |
 | golang.org/x/crypto/ed25519 (stdlib `crypto/ed25519`) | BSD-3-Clause | Tanda tangan manifest report |
 | github.com/zalando/go-keyring | MIT | *(belum dipakai)* token store keyring klien (E-10); Fase 5 memakai file 0600 |
 
@@ -55,6 +60,8 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | testcontainers-go | MIT | Keycloak dev di test |
 | Keycloak (image) | Apache-2.0 | IdP dev |
 | great_expectations (GX Core, Python) | Apache-2.0 | DQ runner contoh + integration test (Q-02) |
+| cgr.dev/chainguard/minio, cgr.dev/chainguard/minio-client (image) | AGPL-3.0 (proses terpisah, tidak di-link/didistribusikan) | S3 object-lock di integration test arsip (image resmi MinIO tidak lagi publik) |
+| OpenSSL CLI | Apache-2.0 | Membuat kunci Ed25519 report di integration test |
 
 ## Layanan eksternal (tidak di-link ke binary)
 

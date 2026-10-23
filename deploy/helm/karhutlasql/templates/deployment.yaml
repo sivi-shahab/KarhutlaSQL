@@ -18,7 +18,7 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
         prometheus.io/scheme: https # port admin ikut TLS server
-        checksum/policy: {{ printf "%s%s" .Values.policy .Values.classification | sha256sum }}
+        checksum/policy: {{ printf "%s%s%s" .Values.policy .Values.classification .Values.reports | sha256sum }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -27,8 +27,9 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
-      {{- if .Values.tls.existingSecret }}
+      {{- if or .Values.tls.existingSecret .Values.reportSigning.existingSecret }}
       initContainers:
+        {{- if .Values.tls.existingSecret }}
         - name: tls-perms
           image: {{ .Values.tls.initImage }}
           command: ["sh", "-c", "cp /tls-secret/tls.crt /tls-secret/tls.key /tls/ && chmod 600 /tls/tls.key"]
@@ -36,6 +37,16 @@ spec:
           volumeMounts:
             - { name: tls-secret, mountPath: /tls-secret, readOnly: true }
             - { name: tls, mountPath: /tls }
+        {{- end }}
+        {{- if .Values.reportSigning.existingSecret }}
+        - name: report-key-perms
+          image: {{ .Values.tls.initImage }}
+          command: ["sh", "-c", "cp /report-secret/report.key /keys/ && chmod 600 /keys/report.key"]
+          securityContext: {{- include "karhutlasql.containerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - { name: report-secret, mountPath: /report-secret, readOnly: true }
+            - { name: keys, mountPath: /keys }
+        {{- end }}
       {{- end }}
       containers:
         - name: server
@@ -67,6 +78,27 @@ spec:
             {{- if .Values.classification }}
             - --classification-file=/etc/karhutlasql/classification.yaml
             {{- end }}
+            {{- if not .Values.fourEyes }}
+            - --four-eyes=false
+            {{- end }}
+            {{- with .Values.archive.s3.endpoint }}
+            - --archive-s3-endpoint={{ . }}
+            - --archive-s3-bucket={{ required "archive.s3.bucket is required" $.Values.archive.s3.bucket }}
+            - --archive-s3-region={{ $.Values.archive.s3.region }}
+            - --archive-retention={{ $.Values.archive.retention }}
+            {{- if $.Values.archive.s3.insecure }}
+            - --archive-s3-insecure
+            {{- end }}
+            {{- end }}
+            {{- if .Values.reports }}
+            - --reports-file=/etc/karhutlasql/reports.yaml
+            {{- end }}
+            {{- if .Values.reportSigning.existingSecret }}
+            - --report-signing-key-file=/keys/report.key
+            {{- end }}
+            {{- with .Values.allowedDirectories }}
+            - --allowed-directories={{ join "," . }}
+            {{- end }}
             {{- with .Values.oidc.issuer }}
             - --oidc-issuer={{ . }}
             - --oidc-audience={{ $.Values.oidc.audience }}
@@ -84,6 +116,14 @@ spec:
             - name: KARHUTLASQL_MASK_KEY
               valueFrom:
                 secretKeyRef: { name: {{ $secret }}, key: mask-key, optional: true }
+            {{- if .Values.archive.s3.endpoint }}
+            - name: KARHUTLASQL_ARCHIVE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ required "archive.existingSecret is required" .Values.archive.existingSecret }}, key: access-key }
+            - name: KARHUTLASQL_ARCHIVE_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.archive.existingSecret }}, key: secret-key }
+            {{- end }}
           ports:
             - { name: flight, containerPort: 31337 }
             - { name: admin, containerPort: 9090 }
@@ -99,15 +139,18 @@ spec:
           resources: {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - { name: data, mountPath: /data }
-            {{- if or .Values.policy .Values.classification }}
+            {{- if or .Values.policy .Values.classification .Values.reports }}
             - { name: policy, mountPath: /etc/karhutlasql, readOnly: true }
+            {{- end }}
+            {{- if .Values.reportSigning.existingSecret }}
+            - { name: keys, mountPath: /keys, readOnly: true }
             {{- end }}
             {{- if .Values.tls.existingSecret }}
             - { name: tls, mountPath: /tls, readOnly: true }
             {{- end }}
       terminationGracePeriodSeconds: 40 # drain gRPC ≤ 30s
       volumes:
-        {{- if or .Values.policy .Values.classification }}
+        {{- if or .Values.policy .Values.classification .Values.reports }}
         - name: policy
           configMap: { name: {{ include "karhutlasql.fullname" . }}-policy }
         {{- end }}
@@ -118,6 +161,12 @@ spec:
         - name: tls-secret
           secret: { secretName: {{ .Values.tls.existingSecret }}, defaultMode: 0440 }
         - name: tls
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
+        {{- end }}
+        {{- if .Values.reportSigning.existingSecret }}
+        - name: report-secret
+          secret: { secretName: {{ .Values.reportSigning.existingSecret }}, defaultMode: 0440 }
+        - name: keys
           emptyDir: { medium: Memory, sizeLimit: 1Mi }
         {{- end }}
       {{- with .Values.nodeSelector }}

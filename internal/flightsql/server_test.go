@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
+	"github.com/bankmega/karhutlasql/internal/accesslog"
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth/local"
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
@@ -36,6 +37,8 @@ import (
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
 	"github.com/bankmega/karhutlasql/internal/metrics"
+	"github.com/bankmega/karhutlasql/internal/objstore"
+	"github.com/bankmega/karhutlasql/internal/report"
 	"github.com/bankmega/karhutlasql/internal/scheduler"
 	"github.com/bankmega/karhutlasql/internal/server"
 	"github.com/bankmega/karhutlasql/internal/session"
@@ -85,6 +88,10 @@ type envOpts struct {
 
 	group     scheduler.Group
 	slowQuery time.Duration
+	accessLog *accesslog.Log
+	reports   map[string]report.Def
+	signer    *report.Signer
+	archive   objstore.Store
 }
 
 func startServer(t *testing.T, initSQL string) *testEnv {
@@ -101,10 +108,12 @@ func start(t testing.TB, o envOpts) *testEnv {
 	sched := scheduler.New()
 	history := session.NewHistory(1000)
 	m := metrics.New(sessions.Counts, sched.Stats)
+	var srv *Server // diisi setelah engine dibuka (UDF report memanggilnya)
 	eng := o.engine
 	if eng == nil {
 		d, err := duckdb.Open(ctx, duckdb.Config{InitSQL: o.initSQL, Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, History: history, MaskKey: o.maskKey})
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, History: history, AccessLog: o.accessLog, MaskKey: o.maskKey,
+				RunReport: func(ctx context.Context, name string) ([]any, error) { return srv.ReportRow(ctx, name) }})
 		}})
 		if err != nil {
 			t.Fatal(err)
@@ -127,9 +136,10 @@ func start(t testing.TB, o envOpts) *testEnv {
 	if policy == nil {
 		policy = authz.Static(authz.DevPolicy(testUser))
 	}
-	srv, err := New(eng, log, Options{
+	srv, err = New(eng, log, Options{
 		QueryTimeout: o.queryTimeout, Audit: al, Metrics: m, Policy: policy, Classification: o.classification,
-		Scheduler: sched, DefaultGroup: o.group, History: history, SlowQuery: o.slowQuery, Profiling: true,
+		Scheduler: sched, DefaultGroup: o.group, History: history, SlowQuery: o.slowQuery, Profiling: true, AccessLog: o.accessLog,
+		Reports: o.reports, Signer: o.signer, Archive: o.archive,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAnalyze(t *testing.T) {
@@ -38,6 +39,7 @@ func TestAnalyze(t *testing.T) {
 		{"COPY warehouse.t TO '/tmp/x.csv'", "COPY", nil, nil},
 		{"ATTACH ':memory:' AS z", "ATTACH", nil, nil},
 		{"SET threads = 1", "SET", nil, nil},
+		{"CALL range(3)", "CALL", nil, []string{"RANGE"}},
 		{"EXPLAIN SELECT 1", "EXPLAIN", nil, nil},
 	}
 	for _, tt := range tests {
@@ -111,5 +113,64 @@ func TestBinderCatalogOrSchema(t *testing.T) {
 	}
 	if _, err := e.Exec(ctx, "INSERT INTO sandbox.s VALUES (1)"); err == nil || !strings.Contains(err.Error(), "mbiguous") {
 		t.Fatalf("ambiguous catalog/schema: %v", err)
+	}
+}
+
+func TestAnalyze_Columns(t *testing.T) {
+	e := open(t, `ATTACH ':memory:' AS w; CREATE TABLE w.n (nik VARCHAR, nama VARCHAR, branch VARCHAR, saldo INT);
+		INSERT INTO w.n VALUES ('1', 'a', '0123', 5)`)
+	for _, tt := range []struct {
+		sql  string
+		want map[string][]string
+	}{
+		{"SELECT nama FROM w.n WHERE nik = 'tidak-ada'", map[string][]string{"w.main.n": {"nik", "nama"}}}, // filter & statistik tidak membuang kolom
+		{"SELECT count(*) FROM w.n", nil},
+		{"SELECT a.nama FROM w.n a JOIN w.n b ON a.nik = b.branch WHERE b.saldo > 1", map[string][]string{"w.main.n": {"nik", "nama", "branch", "saldo"}}},
+		{"SELECT upper(nama) FROM (SELECT * FROM w.n) WHERE length(nik) > 3", map[string][]string{"w.main.n": {"nik", "nama"}}},
+		{"SELECT 42", nil},
+		{"SELECT nama FROM (SELECT * FROM w.n) WHERE nik IN (SELECT branch FROM w.n)", map[string][]string{"w.main.n": {"nik", "nama", "branch"}}},
+	} {
+		a, err := e.Analyze(context.Background(), tt.sql)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for k := range a.Columns {
+			slices.Sort(a.Columns[k])
+		}
+		for k := range tt.want {
+			slices.Sort(tt.want[k])
+		}
+		if !reflect.DeepEqual(a.Columns, tt.want) {
+			t.Errorf("%s: columns = %v, want %v", tt.sql, a.Columns, tt.want)
+		}
+	}
+	// Analyze tidak boleh mengubah setting global (mis. disabled_optimizers
+	// berlaku ke semua koneksi): Describe LIMIT 0 atas query panjang tetap instan.
+	rdr, err := e.Query(context.Background(), "SELECT current_setting('disabled_optimizers')")
+	if got := rows(t, rdr, err); len(got) != 1 || got[0] != "" {
+		t.Errorf("disabled_optimizers = %v", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := e.Describe(ctx, "SELECT count(*) FROM range(1000000000000)"); err != nil {
+		t.Errorf("describe long query: %v", err)
+	}
+}
+
+func TestNormTable(t *testing.T) {
+	for in, want := range map[string]string{
+		"memory.main.n":         "memory.main.n",
+		`"secret".main.k`:       "secret.main.k",
+		`W."Select"."My ""T"""`: `w.select.my "t"`,
+		`"a.b".main.t`:          `"a.b".main.t`, // titik di nama: tidak didukung, dibiarkan (prefix match)
+	} {
+		if got := normTable(in); got != want {
+			t.Errorf("normTable(%q) = %q, want %q", in, got, want)
+		}
+	}
+	e := open(t, `ATTACH ':memory:' AS secret; CREATE TABLE secret.main."select" (i INT)`)
+	a, err := e.Analyze(context.Background(), `SELECT i FROM secret.main."select"`)
+	if err != nil || !slices.Equal(a.Tables, []string{"secret.main.select"}) || !slices.Equal(a.Catalogs, []string{"secret"}) {
+		t.Errorf("tables %v catalogs %v %v", a.Tables, a.Catalogs, err)
 	}
 }

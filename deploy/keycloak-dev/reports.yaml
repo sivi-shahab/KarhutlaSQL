@@ -1,0 +1,10 @@
+# Report dev (G-10): dijalankan sebagai pemanggil; asserts = DQ gate pada snapshot yang sama.
+reports:
+  slik_bulanan:
+    roles: [admin]
+    sql: |
+      SELECT branch_code, count(*) AS jumlah_nasabah, sum(saldo) AS total_saldo
+      FROM warehouse.main.nasabah GROUP BY branch_code ORDER BY branch_code
+    asserts:
+      - { name: nik_lengkap, sql: "SELECT count(*) = 0 FROM warehouse.main.nasabah WHERE nik IS NULL" }
+      - { name: saldo_tidak_negatif, sql: "SELECT count(*) = 0 FROM warehouse.main.nasabah WHERE saldo < 0" }

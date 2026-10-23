@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/bankmega/karhutlasql/internal/accesslog"
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/classification"
@@ -31,12 +32,21 @@ import (
 // Flight SQL memetakannya ke codes.PermissionDenied.
 var ErrPermissionDenied = errors.New("permission denied")
 
+// ErrFailedPrecondition awalan pesan error yang dipetakan ke
+// codes.FailedPrecondition (mis. DQ gate report).
+var ErrFailedPrecondition = errors.New("failed precondition")
+
 // Deps sumber data fungsi.
 type Deps struct {
 	Sessions *session.Registry
 	Gatherer prometheus.Gatherer
 	Audit    *audit.Logger
 	History  *session.History
+	// AccessLog sumber karhutla_access_history(); nil = fungsi menolak.
+	AccessLog *accesslog.Log
+	// RunReport menjalankan report sebagai identitas di ctx (G-10); hasil
+	// satu baris kolom reportCols. nil = fungsi menolak.
+	RunReport func(ctx context.Context, name string) ([]any, error)
 	// MaskKey kunci HMAC-SHA256 untuk mask hash_hmac (G-03); kosong = fungsi
 	// mask menolak semua pemanggilan.
 	MaskKey []byte
@@ -50,14 +60,18 @@ func WithMaskNonce(ctx context.Context, nonce string) context.Context {
 	return context.WithValue(ctx, nonceKey{}, nonce)
 }
 
-// Register mendaftarkan karhutla_sessions(), karhutla_kill_session(id) dan
-// karhutla_metrics() pada conn (berlaku untuk seluruh database).
+// Register mendaftarkan fungsi karhutla_*() pada conn (berlaku untuk seluruh database).
 func Register(_ context.Context, conn *sql.Conn, d Deps) error {
 	fns := map[string]duckdb.RowTableFunction{
-		"karhutla_sessions":      table(sessionCols, nil, d.sessions),
-		"karhutla_kill_session":  table(killCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, d.kill),
-		"karhutla_metrics":       table(metricCols, nil, d.metrics),
-		"karhutla_query_history": table(historyCols, nil, d.history),
+		"karhutla_sessions":       table(sessionCols, nil, nil, d.sessions),
+		"karhutla_kill_session":   table(killCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, nil, d.kill),
+		"karhutla_metrics":        table(metricCols, nil, nil, d.metrics),
+		"karhutla_query_history":  table(historyCols, nil, nil, d.history),
+		"karhutla_access_history": table(accessCols, nil, nil, d.access),
+		// Nama terpisah: duckdb-go gagal bila named argument tidak diberikan dan
+		// DuckDB mengabaikan registrasi overload kedua.
+		"karhutla_report_run":           table(reportCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, nil, d.report),
+		"karhutla_access_history_range": table(accessCols, []duckdb.Type{duckdb.TYPE_DATE, duckdb.TYPE_DATE}, nil, d.access),
 	}
 	for name, f := range fns {
 		if err := duckdb.RegisterTableUDF(conn, name, f); err != nil {
@@ -112,21 +126,42 @@ var (
 		{"queue_ms", duckdb.TYPE_BIGINT}, {"duration_ms", duckdb.TYPE_BIGINT}, {"rows", duckdb.TYPE_BIGINT},
 		{"bytes", duckdb.TYPE_BIGINT}, {"peak_memory_bytes", duckdb.TYPE_BIGINT}, {"plan_hash", duckdb.TYPE_VARCHAR},
 	}
+	accessCols = []col{
+		{"ts", duckdb.TYPE_TIMESTAMP_TZ}, {"request_id", duckdb.TYPE_VARCHAR}, {"session_id", duckdb.TYPE_VARCHAR},
+		{"user", duckdb.TYPE_VARCHAR}, {"source", duckdb.TYPE_VARCHAR}, {"kind", duckdb.TYPE_VARCHAR},
+		{"action", duckdb.TYPE_VARCHAR}, {"status", duckdb.TYPE_VARCHAR}, {"rows", duckdb.TYPE_BIGINT},
+		{"table_name", duckdb.TYPE_VARCHAR}, {"column_name", duckdb.TYPE_VARCHAR}, {"tag", duckdb.TYPE_VARCHAR},
+		{"policy", duckdb.TYPE_VARCHAR}, {"row_filter", duckdb.TYPE_VARCHAR}, {"sql_sha256", duckdb.TYPE_VARCHAR},
+		{"rewritten_sql_sha256", duckdb.TYPE_VARCHAR}, {"sql", duckdb.TYPE_VARCHAR},
+	}
+	// ReportCols kolom karhutla_report_run(name).
+	reportCols = []col{
+		{"report_id", duckdb.TYPE_VARCHAR}, {"name", duckdb.TYPE_VARCHAR}, {"snapshot_id", duckdb.TYPE_VARCHAR},
+		{"rows", duckdb.TYPE_BIGINT}, {"location", duckdb.TYPE_VARCHAR}, {"result_sha256", duckdb.TYPE_VARCHAR},
+		{"manifest_sha256", duckdb.TYPE_VARCHAR},
+	}
 	killCols   = []col{{"session_id", duckdb.TYPE_VARCHAR}, {"killed", duckdb.TYPE_BOOLEAN}}
 	metricCols = []col{{"name", duckdb.TYPE_VARCHAR}, {"labels", duckdb.TYPE_VARCHAR}, {"type", duckdb.TYPE_VARCHAR}, {"value", duckdb.TYPE_DOUBLE}}
 )
 
+// rowsFunc menghasilkan baris dari argumen posisi & bernama.
+type rowsFunc func(ctx context.Context, args []any, named map[string]any) ([][]any, error)
+
 // table membuat table function yang barisnya dihitung saat eksekusi (FillRow
 // pertama), bukan saat bind — prepare/describe tidak memicu efek samping.
-func table(cols []col, args []duckdb.Type, rows func(ctx context.Context, args []any) ([][]any, error)) duckdb.RowTableFunction {
+func table(cols []col, args []duckdb.Type, named map[string]duckdb.Type, rows rowsFunc) duckdb.RowTableFunction {
 	var argInfo []duckdb.TypeInfo
 	for _, t := range args {
 		ti, _ := duckdb.NewTypeInfo(t) // tipe primitif: tidak pernah error
 		argInfo = append(argInfo, ti)
 	}
+	namedInfo := map[string]duckdb.TypeInfo{}
+	for n, t := range named {
+		namedInfo[n], _ = duckdb.NewTypeInfo(t) // tipe primitif: tidak pernah error
+	}
 	return duckdb.RowTableFunction{
-		Config: duckdb.TableFunctionConfig{Arguments: argInfo},
-		BindArgumentsContext: func(ctx context.Context, _ map[string]any, args ...any) (duckdb.RowTableSource, error) {
+		Config: duckdb.TableFunctionConfig{Arguments: argInfo, NamedArguments: namedInfo},
+		BindArgumentsContext: func(ctx context.Context, named map[string]any, args ...any) (duckdb.RowTableSource, error) {
 			infos := make([]duckdb.ColumnInfo, len(cols))
 			for i, c := range cols {
 				ti, err := duckdb.NewTypeInfo(c.t)
@@ -135,16 +170,17 @@ func table(cols []col, args []duckdb.Type, rows func(ctx context.Context, args [
 				}
 				infos[i] = duckdb.ColumnInfo{Name: c.name, T: ti}
 			}
-			return &source{ctx: ctx, args: args, cols: infos, rows: rows}, nil
+			return &source{ctx: ctx, args: args, named: named, cols: infos, rows: rows}, nil
 		},
 	}
 }
 
 type source struct {
-	ctx  context.Context //nolint:containedctx // ctx query, hidup selama eksekusi
-	args []any
-	cols []duckdb.ColumnInfo
-	rows func(context.Context, []any) ([][]any, error)
+	ctx   context.Context //nolint:containedctx // ctx query, hidup selama eksekusi
+	args  []any
+	named map[string]any
+	cols  []duckdb.ColumnInfo
+	rows  rowsFunc
 
 	data [][]any
 	done bool
@@ -157,7 +193,7 @@ func (s *source) Init()                                {}
 func (s *source) FillRow(row duckdb.Row) (bool, error) {
 	if !s.done {
 		var err error
-		if s.data, err = s.rows(s.ctx, s.args); err != nil {
+		if s.data, err = s.rows(s.ctx, s.args, s.named); err != nil {
 			return false, err
 		}
 		s.done = true
@@ -194,7 +230,7 @@ func ts(t time.Time) any {
 
 // sessions: admin melihat semua sesi, user lain hanya sesinya sendiri. Teks
 // SQL mengikuti --audit-log-sql (default hash).
-func (d Deps) sessions(ctx context.Context, _ []any) ([][]any, error) {
+func (d Deps) sessions(ctx context.Context, _ []any, _ map[string]any) ([][]any, error) {
 	id, err := identity(ctx)
 	if err != nil {
 		return nil, err
@@ -216,7 +252,7 @@ func (d Deps) sessions(ctx context.Context, _ []any) ([][]any, error) {
 
 // history: statement terakhir (G-09), tertua dulu; admin melihat semua,
 // user lain hanya miliknya. Teks SQL sudah disamarkan saat dicatat.
-func (d Deps) history(ctx context.Context, _ []any) ([][]any, error) {
+func (d Deps) history(ctx context.Context, _ []any, _ map[string]any) ([][]any, error) {
 	id, err := identity(ctx)
 	if err != nil {
 		return nil, err
@@ -240,7 +276,59 @@ func (d Deps) history(ctx context.Context, _ []any) ([][]any, error) {
 	return out, nil
 }
 
-func (d Deps) kill(ctx context.Context, args []any) ([][]any, error) {
+// access: access-history (G-05) [since, until] (DATE UTC inklusif; tanpa
+// argumen: 7 hari terakhir s.d. sekarang); admin melihat semua, user lain
+// hanya miliknya.
+func (d Deps) access(ctx context.Context, args []any, _ map[string]any) ([][]any, error) {
+	id, err := identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if d.AccessLog == nil {
+		return nil, errors.New("karhutla_access_history: access history is not configured (--archive-dir / --archive-s3-*)")
+	}
+	now := time.Now()
+	since, until := now.AddDate(0, 0, -7), now.Add(time.Minute)
+	if len(args) == 2 {
+		s, ok1 := args[0].(time.Time)
+		u, ok2 := args[1].(time.Time)
+		if !ok1 || !ok2 {
+			return nil, errors.New("karhutla_access_history_range(since, until): both dates are required")
+		}
+		since, until = s, u.AddDate(0, 0, 1) // inklusif
+	}
+	recs, err := d.AccessLog.Query(ctx, since, until)
+	if err != nil {
+		return nil, fmt.Errorf("karhutla_access_history: %w", err)
+	}
+	var out [][]any
+	for _, r := range recs {
+		if !id.HasRole(auth.RoleAdmin) && (r.User != id.Subject || r.Source != id.Source) {
+			continue
+		}
+		out = append(out, r.Values())
+	}
+	return out, nil
+}
+
+// report: karhutla_report_run(name) — dijalankan saat eksekusi (FillRow),
+// bukan bind; izin & DQ gate ditegakkan RunReport.
+func (d Deps) report(ctx context.Context, args []any, _ map[string]any) ([][]any, error) {
+	if _, err := identity(ctx); err != nil {
+		return nil, err
+	}
+	if d.RunReport == nil {
+		return nil, fmt.Errorf("%w: report run is not configured", ErrFailedPrecondition)
+	}
+	name, _ := args[0].(string)
+	row, err := d.RunReport(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("karhutla_report_run: %w", err)
+	}
+	return [][]any{row}, nil
+}
+
+func (d Deps) kill(ctx context.Context, args []any, _ map[string]any) ([][]any, error) {
 	id, err := identity(ctx)
 	if err != nil {
 		return nil, err
@@ -261,7 +349,7 @@ func (d Deps) kill(ctx context.Context, args []any) ([][]any, error) {
 
 // metrics meratakan snapshot gatherer: histogram → _bucket{le}/_sum/_count,
 // summary → {quantile}/_sum/_count.
-func (d Deps) metrics(ctx context.Context, _ []any) ([][]any, error) {
+func (d Deps) metrics(ctx context.Context, _ []any, _ map[string]any) ([][]any, error) {
 	if _, err := identity(ctx); err != nil {
 		return nil, err
 	}

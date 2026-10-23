@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -21,9 +22,12 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/cobra"
+	"go.yaml.in/yaml/v3"
 	"google.golang.org/grpc"
 
+	"github.com/bankmega/karhutlasql/internal/accesslog"
 	"github.com/bankmega/karhutlasql/internal/admin"
+	"github.com/bankmega/karhutlasql/internal/approval"
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth/local"
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
@@ -35,6 +39,8 @@ import (
 	"github.com/bankmega/karhutlasql/internal/flightsql"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
 	"github.com/bankmega/karhutlasql/internal/metrics"
+	"github.com/bankmega/karhutlasql/internal/objstore"
+	"github.com/bankmega/karhutlasql/internal/report"
 	"github.com/bankmega/karhutlasql/internal/scheduler"
 	"github.com/bankmega/karhutlasql/internal/server"
 	"github.com/bankmega/karhutlasql/internal/session"
@@ -115,7 +121,16 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}
 		initSQL = string(b)
 	}
-	policy, err := newPolicy(cfg, log)
+	gateDir := ""
+	if cfg.FourEyes {
+		gateDir = cfg.StateDir
+	} else {
+		log.Warn("four-eyes disabled: policy/classification changes activate on reload (dev only)")
+	}
+	gate := approval.New(gateDir, func(e approval.Event) {
+		auditLog.Emit(ctx, audit.Event{Type: audit.PolicyChange, User: e.By, Object: e.Document, Hash: e.Hash, Status: e.Status})
+	})
+	policy, err := newPolicy(cfg, log, gate)
 	if err != nil {
 		return err
 	}
@@ -128,28 +143,49 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}
 	}
 
-	cls, maskKey, err := newClassification(cfg)
+	cls, maskKey, err := newClassification(cfg, gate)
 	if err != nil {
 		return err
+	}
+
+	archive, err := newArchive(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	var access *accesslog.Log
+	if archive != nil {
+		access = accesslog.New(accesslog.Options{Store: archive})
 	}
 
 	sessions := session.NewRegistry(cfg.SessionIdleTimeout)
 	sched := scheduler.New()
 	history := session.NewHistory(queryHistorySize)
 	m := metrics.New(sessions.Counts, sched.Stats)
+	reports, signer, err := newReports(cfg, log)
+	if err != nil {
+		return err
+	}
+	var srv *flightsql.Server // diisi setelah engine dibuka (UDF report memanggilnya)
+	secrets, err := loadSecrets(cfg.DuckDBSecretsFile)
+	if err != nil {
+		return err
+	}
 	eng, err := duckdb.Open(ctx, duckdb.Config{Path: cfg.DatabaseFilename, InitSQL: initSQL,
+		AllowedDirectories: cfg.AllowedDirectories, Secrets: secrets,
 		Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, MaskKey: maskKey})
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, AccessLog: access, MaskKey: maskKey,
+				RunReport: func(ctx context.Context, name string) ([]any, error) { return srv.ReportRow(ctx, name) }})
 		}})
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, eng.Close()) }()
 
-	srv, err := flightsql.New(eng, log, flightsql.Options{
+	srv, err = flightsql.New(eng, log, flightsql.Options{
 		QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m, Policy: policy, Classification: cls,
 		Scheduler: sched, DefaultGroup: scheduler.Group{MaxConcurrent: cfg.MaxConcurrent, QueueSize: cfg.QueueSize, QueueTimeout: cfg.QueueTimeout},
-		History: history, SlowQuery: cfg.SlowQueryThreshold, Profiling: cfg.QueryProfiling,
+		History: history, SlowQuery: cfg.SlowQueryThreshold, Profiling: cfg.QueryProfiling, AccessLog: access,
+		Reports: reports, Signer: signer, Archive: archive,
 	})
 	if err != nil {
 		return err
@@ -158,6 +194,8 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	ai := interceptor.NewAuth(interceptor.AuthOptions{Local: authn, OIDC: oidcVerifier, Policy: policy, Audit: auditLog, Metrics: m, Log: log})
 	si := interceptor.NewSession(sessions, auditLog, m)
 	rl := interceptor.NewRateLimit(cfg.RateLimit, cfg.RateBurst, m)
+
+	adminOpts := admin.Options{Health: health, Gatherer: m.Registry, Sessions: sessions, Verify: ai.Verify, Audit: auditLog, AccessLog: access, Gate: gate}
 
 	lc := &net.ListenConfig{}
 	lis, err := lc.Listen(ctx, "tcp", cfg.Addr())
@@ -185,20 +223,31 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	errc := make(chan error, 2)
 	go func() {
 		errc <- server.Serve(ctx, lis, srv, server.Options{
-			TLS:    tlsCfg,
-			Unary:  []grpc.UnaryServerInterceptor{ai.Unary(), rl.Unary(), si.Unary()},
-			Stream: []grpc.StreamServerInterceptor{ai.Stream(), rl.Stream(), si.Stream()},
-			Health: health,
-			Drain:  server.DrainTimeout,
+			TLS:     tlsCfg,
+			Unary:   []grpc.UnaryServerInterceptor{ai.Unary(), rl.Unary(), si.Unary()},
+			Stream:  []grpc.StreamServerInterceptor{ai.Stream(), rl.Stream(), si.Stream()},
+			Health:  health,
+			Drain:   server.DrainTimeout,
+			Actions: adminActions(adminOpts),
 		}, log)
 		cancel()
 	}()
 	go sessions.Run(ctx, time.Minute)
-	go reloadOnSIGHUP(ctx, auditLog, log, policy, cls)
+	accessDone := make(chan struct{})
+	if access != nil {
+		go func() {
+			defer close(accessDone)
+			access.Run(ctx, cfg.AccessLogFlushInterval, func(err error) { log.Error("access history flush failed", "err", err) })
+		}()
+	} else {
+		close(accessDone)
+	}
+	defer func() { cancel(); <-accessDone }() // flush terakhir setelah server berhenti
+	go reloadOnSIGHUP(ctx, auditLog, log, gate)
 	n := 1
 	if adminLis != nil {
 		n++
-		h := admin.Handler(admin.Options{Health: health, Gatherer: m.Registry, Sessions: sessions, Verify: ai.Verify, Audit: auditLog})
+		h := admin.Handler(adminOpts)
 		go func() { errc <- admin.Serve(ctx, adminLis, h, log); cancel() }()
 	}
 	for range n {
@@ -207,32 +256,131 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	return err
 }
 
-func newPolicy(cfg config.Config, log *slog.Logger) (*authz.Store, error) {
+// newReports definisi report dan kunci tanda tangan (file 0600).
+func newReports(cfg config.Config, log *slog.Logger) (map[string]report.Def, *report.Signer, error) {
+	defs, err := report.Load(cfg.ReportsFile)
+	if err != nil || cfg.ReportSigningKeyFile == "" {
+		return defs, nil, err
+	}
+	if err := server.CheckSecretFile(cfg.ReportSigningKeyFile); err != nil {
+		return nil, nil, fmt.Errorf("main.newReports: %w", err)
+	}
+	s, err := report.LoadSigner(cfg.ReportSigningKeyFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	log.Info("report signing key", "key_id", s.KeyID, "reports", len(defs))
+	return defs, s, nil
+}
+
+// loadSecrets membaca --duckdb-secrets-file; nilai rahasia diambil dari env
+// (file tidak memuat secret):
+//
+//	secrets:
+//	  - name: lake
+//	    type: s3
+//	    scope: s3://lake/
+//	    options: { endpoint: "minio:9000", url_style: path, use_ssl: "false" }
+//	    env: { key_id: LAKE_KEY_ID, secret: LAKE_SECRET }
+func loadSecrets(path string) ([]duckdb.Secret, error) {
+	if path == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("main.loadSecrets: %w", err)
+	}
+	var f struct {
+		Secrets []struct {
+			Name, Type, Scope string
+			Options, Env      map[string]string
+		}
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&f); err != nil {
+		return nil, fmt.Errorf("main.loadSecrets: %w", err)
+	}
+	out := make([]duckdb.Secret, 0, len(f.Secrets))
+	for _, s := range f.Secrets {
+		opts := map[string]string{}
+		for k, v := range s.Options {
+			opts[k] = v
+		}
+		for k, env := range s.Env {
+			v := os.Getenv(env)
+			if v == "" {
+				return nil, fmt.Errorf("main.loadSecrets: secret %s: env %s is empty", s.Name, env)
+			}
+			opts[k] = v
+		}
+		out = append(out, duckdb.Secret{Name: s.Name, Type: s.Type, Scope: s.Scope, Options: opts})
+	}
+	return out, nil
+}
+
+// newArchive penyimpanan access-history & report; nil bila tidak dikonfigurasi.
+func newArchive(ctx context.Context, cfg config.Config, log *slog.Logger) (objstore.Store, error) {
+	switch {
+	case cfg.ArchiveDir != "":
+		log.Warn("archive in local directory: not WORM (dev only)", "dir", cfg.ArchiveDir)
+		return objstore.Dir(cfg.ArchiveDir), nil
+	case cfg.ArchiveS3Endpoint != "":
+		ak, sk := os.Getenv(cfg.ArchiveS3AccessKeyEnv), os.Getenv(cfg.ArchiveS3SecretKeyEnv)
+		if ak == "" || sk == "" {
+			return nil, fmt.Errorf("main.newArchive: env %s and %s are required", cfg.ArchiveS3AccessKeyEnv, cfg.ArchiveS3SecretKeyEnv)
+		}
+		st, err := objstore.NewS3(ctx, objstore.S3Config{Endpoint: cfg.ArchiveS3Endpoint, Bucket: cfg.ArchiveS3Bucket, Region: cfg.ArchiveS3Region,
+			AccessKey: ak, SecretKey: sk, Insecure: cfg.ArchiveS3Insecure, Retention: cfg.ArchiveRetention})
+		if err != nil {
+			return nil, err
+		}
+		log.Info("archive", "store", st.String(), "retention", cfg.ArchiveRetention.String())
+		return st, nil
+	}
+	log.Warn("no archive configured: access history (G-05) and report run (G-10) disabled (dev only)")
+	return nil, nil
+}
+
+func newPolicy(cfg config.Config, log *slog.Logger, gate *approval.Gate) (*authz.Store, error) {
 	if cfg.PolicyFile == "" {
 		log.Warn("no policy file: only the local user is allowed, as admin (dev only)", "user", cfg.Username)
 		return authz.Static(authz.DevPolicy(cfg.Username)), nil
 	}
-	return authz.Load(cfg.PolicyFile)
+	store := authz.NewStore()
+	return store, gate.Open(approval.Doc{Name: "policy", Path: cfg.PolicyFile, Prepare: store.Prepare})
 }
 
-func newClassification(cfg config.Config) (*classification.Store, []byte, error) {
-	cls, err := classification.Load(cfg.ClassificationFile)
-	if err != nil {
-		return nil, nil, err
-	}
+func newClassification(cfg config.Config, gate *approval.Gate) (*classification.Store, []byte, error) {
+	cls, _ := classification.Load("") // path kosong: tidak pernah error
 	key := []byte(os.Getenv(cfg.MaskKeyEnv))
-	if cls.Get().UsesHMAC() && len(key) < 32 {
-		return nil, nil, fmt.Errorf("main.newClassification: hash_hmac masks need env %s with >= 32 bytes", cfg.MaskKeyEnv)
+	if cfg.ClassificationFile == "" {
+		return cls, key, nil
 	}
-	return cls, key, nil
+	check := func(c *classification.Classification) error {
+		if c.UsesHMAC() && len(key) < 32 {
+			return fmt.Errorf("hash_hmac masks need env %s with >= 32 bytes", cfg.MaskKeyEnv)
+		}
+		return nil
+	}
+	err := gate.Open(approval.Doc{Name: "classification", Path: cfg.ClassificationFile,
+		Prepare: func(b []byte) (func(), error) { return cls.Prepare(b, check) }})
+	return cls, key, err
 }
 
-// reloader policy/classification yang bisa dimuat ulang.
-type reloader interface{ Reload() error }
+// adminActions DoAction admin (G-12) di atas operasi admin HTTP.
+func adminActions(o admin.Options) map[string]func(context.Context, []byte) ([]byte, error) {
+	out := map[string]func(context.Context, []byte) ([]byte, error){}
+	for _, typ := range admin.Actions {
+		out[typ] = func(ctx context.Context, body []byte) ([]byte, error) { return o.Do(ctx, typ, body) }
+	}
+	return out
+}
 
-// reloadOnSIGHUP memuat ulang policy & classification; file tidak valid →
-// versi lama tetap aktif.
-func reloadOnSIGHUP(ctx context.Context, a *audit.Logger, log *slog.Logger, stores ...reloader) {
+// reloadOnSIGHUP membaca ulang policy & classification: dengan four-eyes isi
+// baru menjadi pending (perlu 2 persetujuan admin), tanpa itu langsung aktif;
+// file tidak valid → versi lama tetap aktif.
+func reloadOnSIGHUP(ctx context.Context, a *audit.Logger, log *slog.Logger, gate *approval.Gate) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP)
 	defer signal.Stop(ch)
@@ -243,14 +391,15 @@ func reloadOnSIGHUP(ctx context.Context, a *audit.Logger, log *slog.Logger, stor
 		case <-ch:
 			ev := audit.Event{Type: audit.PolicyReload, Status: "OK"}
 			var errs []error
-			for _, s := range stores {
-				errs = append(errs, s.Reload())
+			for _, st := range gate.Status() {
+				_, err := gate.Propose(st.Document, "")
+				errs = append(errs, err)
 			}
 			if err := errors.Join(errs...); err != nil {
 				ev.Status, ev.Error = "FAILED", err.Error()
 				log.Error("policy reload failed; keeping previous policy", "err", err)
 			} else {
-				log.Info("policy reloaded")
+				log.Info("policy reloaded", "four_eyes", gate.Enabled())
 			}
 			a.Emit(ctx, ev)
 		}

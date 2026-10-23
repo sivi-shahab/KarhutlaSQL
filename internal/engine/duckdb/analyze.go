@@ -35,7 +35,7 @@ var kinds = map[duckdbdrv.StmtType]string{
 
 // explained tipe statement yang dianalisis lewat EXPLAIN; tipe lain hanya
 // dilaporkan Kind-nya (pemanggil memperlakukannya sebagai operasi sistem).
-var explained = []string{"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"}
+var explained = []string{"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "CALL"}
 
 // operators nama operator plan logis/fisik DuckDB yang bukan sumber data.
 // Node lain tanpa "Table" dianggap table function (fail-closed: operator baru
@@ -68,19 +68,19 @@ type planNode struct {
 func (e *Engine) Analyze(ctx context.Context, query string) (engine.Analysis, error) {
 	c, err := e.conn(ctx)
 	if err != nil {
-		return engine.Analysis{}, fmt.Errorf("duckdb.Analyze: %w", err)
+		return engine.Analysis{}, wrap("duckdb.Analyze", err)
 	}
 	defer func() { _ = c.Close() }()
 
 	ds, err := c.Prepare(query) // count != 1 → error, tidak ada yang dieksekusi
 	if err != nil {
-		return engine.Analysis{}, fmt.Errorf("duckdb.Analyze: %w", err)
+		return engine.Analysis{}, wrap("duckdb.Analyze", err)
 	}
 	st := ds.(*duckdbdrv.Stmt)
 	typ, terr := st.StatementType()
 	nparams := st.NumInput()
 	if err := errors.Join(terr, ds.Close()); err != nil {
-		return engine.Analysis{}, fmt.Errorf("duckdb.Analyze: %w", err)
+		return engine.Analysis{}, wrap("duckdb.Analyze", err)
 	}
 	a := engine.Analysis{Kind: kinds[typ]}
 	if a.Kind == "" {
@@ -88,7 +88,7 @@ func (e *Engine) Analyze(ctx context.Context, query string) (engine.Analysis, er
 	}
 
 	if a.DefaultCatalog, a.AllCatalogs, err = catalogs(ctx, c); err != nil {
-		return engine.Analysis{}, fmt.Errorf("duckdb.Analyze: %w", err)
+		return engine.Analysis{}, wrap("duckdb.Analyze", err)
 	}
 	if !slices.Contains(explained, a.Kind) {
 		return a, nil
@@ -96,11 +96,11 @@ func (e *Engine) Analyze(ctx context.Context, query string) (engine.Analysis, er
 	// 'all' = plan logis pra-optimasi + teroptimasi + fisik: scan yang
 	// dibuang optimizer (mis. parameter NULL → EMPTY_RESULT) tetap terlihat.
 	if _, err := c.ExecContext(ctx, "SET explain_output = 'all'", nil); err != nil {
-		return engine.Analysis{}, fmt.Errorf("duckdb.Analyze: %w", err)
+		return engine.Analysis{}, wrap("duckdb.Analyze", err)
 	}
 	plans, err := queryRows(ctx, c, "EXPLAIN (FORMAT json) "+query, make([]any, nparams))
 	if err != nil {
-		return engine.Analysis{}, fmt.Errorf("duckdb.Analyze: %w", err)
+		return engine.Analysis{}, wrap("duckdb.Analyze", err)
 	}
 	for _, p := range plans { // (explain_key, explain_value)
 		var nodes []planNode
@@ -109,9 +109,101 @@ func (e *Engine) Analyze(ctx context.Context, query string) (engine.Analysis, er
 		}
 		for _, n := range nodes {
 			walk(&a, n, nil, p[0] == "logical_plan")
+			if p[0] == "physical_plan" {
+				columns(&a, n)
+			}
 		}
 	}
+	if a.Kind == "SELECT" && nparams == 0 {
+		boundColumns(ctx, c, query, &a)
+	}
 	return a, nil
+}
+
+// boundColumns mengganti Columns dengan kolom yang dibaca tiap scan menurut
+// plan logis teroptimasi (json_serialize_plan): termasuk kolom filter yang
+// di-pushdown ke scan. Tabel yang dibuang optimizer (mis. EMPTY_RESULT dari
+// statistik) memakai kolom yang direferensikan binder (plan tanpa optimasi).
+// Gagal (sintaks yang tidak didukung) → Columns dari plan fisik tetap.
+func boundColumns(ctx context.Context, c *duckdbdrv.Conn, query string, a *engine.Analysis) {
+	opt, ok := planColumns(ctx, c, query, true)
+	if !ok {
+		return
+	}
+	var raw map[string][]string
+	for _, t := range a.Tables {
+		if _, seen := opt[t]; seen {
+			continue
+		}
+		if raw == nil {
+			if raw, ok = planColumns(ctx, c, query, false); !ok {
+				return
+			}
+		}
+		opt[t] = raw[t]
+	}
+	a.Columns = nil
+	for t, l := range opt {
+		if len(l) > 0 {
+			if a.Columns == nil {
+				a.Columns = map[string][]string{}
+			}
+			a.Columns[t] = l
+		}
+	}
+}
+
+// planColumns tabel → kolom setiap LOGICAL_GET di json_serialize_plan.
+func planColumns(ctx context.Context, c *duckdbdrv.Conn, query string, optimize bool) (map[string][]string, bool) {
+	rows, err := queryRows(ctx, c, "SELECT json_serialize_plan($1::VARCHAR, optimize := $2::BOOLEAN)::VARCHAR", []any{query, optimize})
+	if err != nil || len(rows) != 1 {
+		return nil, false
+	}
+	var root struct {
+		Error bool `json:"error"`
+		Plans any  `json:"plans"`
+	}
+	if json.Unmarshal([]byte(rows[0][0]), &root) != nil || root.Error {
+		return nil, false
+	}
+	cols := map[string][]string{}
+	var visit func(v any)
+	visit = func(v any) {
+		switch x := v.(type) {
+		case []any:
+			for _, e := range x {
+				visit(e)
+			}
+		case map[string]any:
+			if x["type"] == "LOGICAL_GET" {
+				fd, _ := x["function_data"].(map[string]any)
+				cat, _ := fd["catalog"].(string)
+				sch, _ := fd["schema"].(string)
+				tbl, _ := fd["table"].(string)
+				names, _ := x["names"].([]any)
+				idx, _ := x["column_indexes"].([]any)
+				if cat != "" && sch != "" && tbl != "" {
+					t := strings.ToLower(cat + "." + sch + "." + tbl)
+					list := cols[t]
+					for _, ci := range idx {
+						m, _ := ci.(map[string]any)
+						// row id = 2^64-1: bandingkan sebelum konversi agar tidak meluap.
+						if i, ok := m["index"].(float64); ok && i >= 0 && i < float64(len(names)) {
+							if n, ok := names[int(i)].(string); ok {
+								addUnique(&list, strings.ToLower(n))
+							}
+						}
+					}
+					cols[t] = list
+				}
+			}
+			for _, e := range x {
+				visit(e)
+			}
+		}
+	}
+	visit(root.Plans)
+	return cols, true
 }
 
 // walk mengumpulkan catalog/tabel/fungsi; scan di plan logis pra-optimasi
@@ -119,7 +211,7 @@ func (e *Engine) Analyze(ctx context.Context, query string) (engine.Analysis, er
 func walk(a *engine.Analysis, n planNode, parent *planNode, logical bool) {
 	switch table, _ := n.ExtraInfo["Table"].(string); {
 	case table != "":
-		table = strings.ToLower(table)
+		table = normTable(table)
 		addUnique(&a.Tables, table)
 		if logical {
 			sc := engine.Scan{Table: table}
@@ -145,6 +237,65 @@ func walk(a *engine.Analysis, n planNode, parent *planNode, logical bool) {
 	}
 	for _, c := range n.Children {
 		walk(a, c, &n, logical)
+	}
+}
+
+// normTable "catalog.schema.table" dari EXPLAIN (identifier yang perlu
+// kutip, mis. keyword seperti "secret", ditulis ber-kutip) → bagian tanpa
+// kutip, huruf kecil.
+func normTable(s string) string {
+	var parts []string
+	var cur strings.Builder
+	quoted := false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '"' && quoted && i+1 < len(s) && s[i+1] == '"':
+			cur.WriteByte('"')
+			i++
+		case c == '"':
+			quoted = !quoted
+		case c == '.' && !quoted:
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	parts = append(parts, cur.String())
+	if quoted || len(parts) != 3 || slices.ContainsFunc(parts, func(p string) bool { return strings.Contains(p, ".") }) {
+		return strings.ToLower(s) // titik di nama: ambigu, tidak didukung (fail-closed di walk)
+	}
+	return strings.ToLower(strings.Join(parts, "."))
+}
+
+// columns mencatat Projections setiap scan tabel di plan fisik.
+func columns(a *engine.Analysis, n planNode) {
+	if table, _ := n.ExtraInfo["Table"].(string); table != "" {
+		var cols []string
+		switch p := n.ExtraInfo["Projections"].(type) {
+		case string:
+			if p != "" {
+				cols = []string{p}
+			}
+		case []any:
+			for _, c := range p {
+				if s, ok := c.(string); ok {
+					cols = append(cols, s)
+				}
+			}
+		}
+		table = normTable(table)
+		for _, c := range cols {
+			if a.Columns == nil {
+				a.Columns = map[string][]string{}
+			}
+			list := a.Columns[table]
+			addUnique(&list, strings.ToLower(c))
+			a.Columns[table] = list
+		}
+	}
+	for _, c := range n.Children {
+		columns(a, c)
 	}
 }
 
@@ -227,14 +378,14 @@ func (e *Engine) DeserializeSQL(ctx context.Context, ast string) (string, error)
 func (e *Engine) Columns(ctx context.Context, catalog, schema, table string) ([]engine.Column, error) {
 	c, err := e.conn(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("duckdb.Columns: %w", err)
+		return nil, wrap("duckdb.Columns", err)
 	}
 	defer func() { _ = c.Close() }()
 	rows, err := queryRows(ctx, c, `SELECT column_name, data_type FROM information_schema.columns
 		WHERE lower(table_catalog) = lower($1) AND lower(table_schema) = lower($2) AND lower(table_name) = lower($3)
 		ORDER BY ordinal_position`, []any{catalog, schema, table})
 	if err != nil {
-		return nil, fmt.Errorf("duckdb.Columns: %w", err)
+		return nil, wrap("duckdb.Columns", err)
 	}
 	cols := make([]engine.Column, len(rows))
 	for i, r := range rows {

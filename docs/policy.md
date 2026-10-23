@@ -133,3 +133,56 @@ Rate limit per user: `--rate-limit <req/detik>` + `--rate-burst` (token
 bucket, 0 = mati) menghitung setiap RPC — satu query Flight SQL = 2 RPC
 (GetFlightInfo + DoGet). Lewat batas → `RESOURCE_EXHAUSTED`
 ("rate limit exceeded").
+
+## Four-eyes (G-11)
+
+Dengan `--policy-file`/`--classification-file` dan `--four-eyes` (default
+aktif), isi file yang berubah **tidak** langsung aktif:
+
+1. Perubahan diajukan: `SIGHUP`, restart dengan file baru, `DoAction
+   reload_policy {"document":"policy"}`, atau `POST
+   /admin/policy/policy/reload`. Pengaju admin dihitung sebagai persetujuan
+   pertama; SIGHUP/restart tidak punya identitas (butuh dua persetujuan).
+2. Admin lain menyetujui hash yang sama: `DoAction approve_policy
+   {"document":"policy","hash":"<sha256>"}` atau `POST
+   /admin/policy/policy/approve?hash=…`. Identitas = `source:subject`
+   (`local:admin`, `oidc:dian`); identitas yang sama dua kali ditolak.
+3. Dua persetujuan berbeda → aktif. Status & isi pending: `DoAction
+   policy_status` / `GET /admin/policy`.
+
+Isi yang disetujui disimpan di `--state-dir` (default
+`<dir database>/karhutlasql-state`, file 0600): restart memakai isi yang
+disetujui terakhir, file yang berbeda menjadi pending. Start pertama tanpa
+state = *bootstrap* (isi file aktif, tercatat `approved_by: bootstrap`).
+Semua langkah tercatat di audit `policy_change` (`pending`/`approved`/
+`activated`, `hash`). `--four-eyes=false` = reload langsung aktif (dev).
+
+Batas: state dir dilindungi izin file, bukan tanda tangan — siapa pun yang
+bisa menulis state dir di host bisa melewatinya (GitOps signed commit belum
+ada, ADR 29).
+
+## Residency & egress (G-07)
+
+Setelah `--init-sql-file` dan injeksi secret, server mengunci akses
+eksternal DuckDB: hanya path/prefix URL di `--allowed-directories` (mis.
+`/data/export/,s3://lake/`) yang bisa dipakai `COPY`, `read_*`, `ATTACH`.
+Selain itu, `INSTALL`/`LOAD` ekstensi dan `CREATE PERSISTENT SECRET` ditolak
+oleh DuckDB sendiri — juga untuk admin — dengan `PERMISSION_DENIED`. Kunci
+ini tidak bisa dibuka lagi selama proses hidup (`SET
+enable_external_access`/`allowed_directories` ditolak DuckDB). Ekstensi
+yang dibutuhkan (mis. httpfs pada build dinamis) di-`LOAD` di init SQL.
+
+Secret DuckDB hanya diinjeksi server sebagai `TEMPORARY SECRET … SCOPE`
+dari `--duckdb-secrets-file` (nilai rahasia dari env, bukan file):
+
+```yaml
+secrets:
+  - name: lake
+    type: s3
+    scope: s3://lake/            # wajib di dalam --allowed-directories
+    options: { endpoint: "minio:9000", url_style: path, use_ssl: "false" }
+    env: { key_id: LAKE_KEY_ID, secret: LAKE_SECRET }
+```
+
+Catatan: image distroless statis tidak bisa memuat httpfs (ADR 19), jadi
+secret bertipe `s3` hanya berlaku pada build dinamis.

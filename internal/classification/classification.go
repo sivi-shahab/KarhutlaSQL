@@ -155,5 +155,18 @@ func (s *Store) Reload() error {
 	return nil
 }
 
+// Prepare memvalidasi isi classification; activate menjadikannya aktif
+// (dipakai approval.Gate, G-11). check tambahan opsional (mis. kunci HMAC).
+func (s *Store) Prepare(b []byte, check func(*Classification) error) (func(), error) {
+	c, err := Parse(b)
+	if err == nil && check != nil {
+		err = check(c)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return func() { s.c.Store(c) }, nil
+}
+
 // Get classification aktif.
 func (s *Store) Get() *Classification { return s.c.Load() }

@@ -165,3 +165,69 @@ def run(conn, sql):
     with conn.cursor() as cur:
         cur.execute(sql)
         return cur.fetchall() if cur.description else None
+
+
+# --- MinIO (object-lock) untuk arsip access-history & report (Fase 6b) ---
+
+MINIO_IMAGE = "cgr.dev/chainguard/minio:latest"
+MC_IMAGE = "cgr.dev/chainguard/minio-client:latest"
+BUCKET = "karhutla"
+
+
+@pytest.fixture(scope="session")
+def minio():
+    if not shutil.which("docker"):
+        pytest.skip("docker tidak tersedia")
+    port = _free_port()
+    name = f"karhutlasql-minio-{port}"
+    user, pw = "k" + secrets.token_hex(6), secrets.token_urlsafe(24)
+    subprocess.run(["docker", "run", "-d", "--rm", "--name", name, "-p", f"127.0.0.1:{port}:9000",
+                    "-e", "MINIO_ROOT_USER", "-e", "MINIO_ROOT_PASSWORD", MINIO_IMAGE, "server", "/tmp/data"],
+                   env={**os.environ, "MINIO_ROOT_USER": user, "MINIO_ROOT_PASSWORD": pw}, check=True, capture_output=True)
+    try:
+        def mc(*args):
+            return subprocess.run(["docker", "run", "--rm", "--network", f"container:{name}", "-e", "MC_HOST_m",
+                                   MC_IMAGE, *args], env={**os.environ, "MC_HOST_m": f"http://{user}:{pw}@127.0.0.1:9000"},
+                                  capture_output=True, text=True)
+        deadline = time.time() + 60
+        while mc("ls", "m").returncode != 0:
+            if time.time() > deadline:
+                pytest.fail("MinIO tidak siap dalam 60 detik")
+            time.sleep(1)
+        r = mc("mb", "--with-lock", f"m/{BUCKET}")
+        assert r.returncode == 0, r.stderr
+        yield {"endpoint": f"127.0.0.1:{port}", "access_key": user, "secret_key": pw, "mc": mc}
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
+@pytest.fixture(scope="session")
+def gov_server(tmp_path_factory, keycloak, minio):
+    """Server OIDC + arsip MinIO + report + four-eyes atas salinan policy dev."""
+    d = tmp_path_factory.mktemp("gov")
+    policy = d / "policy.yaml"
+    shutil.copy(KC_DIR / "policy.yaml", policy)
+    key, pub = d / "report.key", d / "report.pub"
+    subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519", "-out", str(key)], check=True, capture_output=True)
+    key.chmod(0o600)
+    subprocess.run(["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(pub)], check=True, capture_output=True)
+    init = d / "init.sql"
+    init.write_text(
+        "CREATE TABLE IF NOT EXISTS warehouse.main.nasabah AS SELECT '3171' || lpad(i::VARCHAR, 12, '0') AS nik,"
+        " 'Nasabah ' || i AS nama, '0812' || i AS phone,"
+        " CASE WHEN i % 4 = 0 THEN '0123' ELSE '0456' END AS branch_code, (i * 1000)::DECIMAL(15,2) AS saldo"
+        " FROM range(1, 1001) r(i);\n"
+        "ATTACH ':memory:' AS sandbox; CREATE TABLE sandbox.main.s (i BIGINT);\n"
+        "ATTACH ':memory:' AS secret; CREATE TABLE secret.main.k AS SELECT 1 AS i;\n")
+    gen = start_server(tmp_path_factory, d / "warehouse.duckdb", [
+        "--init-sql-file", str(init), "--policy-file", str(policy),
+        "--classification-file", str(KC_DIR / "classification.yaml"),
+        "--oidc-issuer", keycloak["issuer"], "--oidc-audience", "karhutlasql",
+        "--archive-s3-endpoint", minio["endpoint"], "--archive-s3-bucket", BUCKET, "--archive-s3-insecure",
+        "--archive-retention", "24h", "--access-log-flush-interval", "1s",
+        "--reports-file", str(KC_DIR / "reports.yaml"), "--report-signing-key-file", str(key)],
+        extra_env={"KARHUTLASQL_MASK_KEY": secrets.token_urlsafe(32),
+                   "KARHUTLASQL_ARCHIVE_ACCESS_KEY": minio["access_key"], "KARHUTLASQL_ARCHIVE_SECRET_KEY": minio["secret_key"]})
+    info = next(gen)
+    yield {**info, "policy": policy, "public_key": pub}
+    next(gen, None)

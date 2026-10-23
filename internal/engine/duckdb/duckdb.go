@@ -9,6 +9,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -28,6 +29,25 @@ type Config struct {
 	// Setup dipanggil sekali saat Open dengan satu koneksi, mis. untuk
 	// mendaftarkan UDF (berlaku di seluruh database). Engine tidak tahu isinya.
 	Setup func(ctx context.Context, conn *sql.Conn) error
+	// Guardrail residency (G-07), diterapkan setelah InitSQL & Secrets: akses
+	// file/URL hanya di AllowedDirectories (path atau prefix URL, mis.
+	// "s3://lake/"); INSTALL/LOAD/ATTACH/COPY di luar itu dan persistent
+	// secret ditolak DuckDB sendiri. Tidak bisa dibalik selama proses hidup
+	// (DuckDB menolak enable_external_access=true dan perubahan
+	// allowed_directories), jadi lock_configuration tidak dipakai — itu juga
+	// mengunci SET per koneksi yang dipakai server (explain/profiling).
+	AllowedDirectories []string
+	// Secrets TEMPORARY SECRET yang diinjeksi server; SCOPE wajib di dalam
+	// AllowedDirectories.
+	Secrets []Secret
+	// Unlocked mematikan guardrail (test engine saja).
+	Unlocked bool
+}
+
+// Secret satu TEMPORARY SECRET DuckDB.
+type Secret struct {
+	Name, Type, Scope string
+	Options           map[string]string // nilai rahasia sudah diambil dari env
 }
 
 // Engine adalah engine.Engine berbasis DuckDB. Setiap statement memakai koneksi
@@ -44,7 +64,7 @@ var _ engine.Engine = (*Engine)(nil)
 func Open(ctx context.Context, cfg Config) (*Engine, error) {
 	c, err := duckdbdrv.NewConnector(cfg.Path, nil)
 	if err != nil {
-		return nil, fmt.Errorf("duckdb.Open: %w", err)
+		return nil, wrap("duckdb.Open", err)
 	}
 	e := &Engine{connector: c}
 	if cfg.Setup != nil {
@@ -57,8 +77,78 @@ func Open(ctx context.Context, cfg Config) (*Engine, error) {
 			return nil, errors.Join(fmt.Errorf("duckdb.Open: init sql: %w", err), c.Close())
 		}
 	}
+	if err := e.harden(ctx, cfg); err != nil {
+		return nil, errors.Join(wrap("duckdb.Open", err), c.Close())
+	}
 	return e, nil
 }
+
+// harden menginjeksi secret lalu mengunci akses eksternal (G-07).
+func (e *Engine) harden(ctx context.Context, cfg Config) error {
+	for _, s := range cfg.Secrets {
+		q, err := secretSQL(s, cfg.AllowedDirectories)
+		if err != nil {
+			return err
+		}
+		if _, err := e.Exec(ctx, q); err != nil {
+			msg := err.Error()
+			for _, v := range s.Options {
+				if v != "" && strings.Contains(msg, v) {
+					msg = "(error text withheld: contains secret value)"
+				}
+			}
+			return fmt.Errorf("secret %s: %s", s.Name, msg)
+		}
+	}
+	if cfg.Unlocked {
+		return nil
+	}
+	dirs := make([]string, len(cfg.AllowedDirectories))
+	for i, d := range cfg.AllowedDirectories {
+		dirs[i] = quoteLiteral(d)
+	}
+	q := fmt.Sprintf("SET allowed_directories = [%s]; SET enable_external_access = false", strings.Join(dirs, ", "))
+	if _, err := e.Exec(ctx, q); err != nil {
+		return fmt.Errorf("guardrail: %w", err)
+	}
+	return nil
+}
+
+// secretSQL CREATE TEMPORARY SECRET; scope di luar allowlist → error.
+func secretSQL(s Secret, allowed []string) (string, error) {
+	inScope := false
+	for _, a := range allowed {
+		inScope = inScope || (a != "" && strings.HasPrefix(s.Scope, a))
+	}
+	if s.Name == "" || s.Type == "" || !inScope {
+		return "", fmt.Errorf("secret %q: name, type and a scope inside allowed directories are required", s.Name)
+	}
+	parts := []string{"TYPE " + quoteIdent(s.Type), "SCOPE " + quoteLiteral(s.Scope)}
+	keys := make([]string, 0, len(s.Options))
+	for k := range s.Options {
+		if strings.EqualFold(k, "scope") || strings.EqualFold(k, "type") || strings.EqualFold(k, "persistent") {
+			return "", fmt.Errorf("secret %q: option %s not allowed", s.Name, k)
+		}
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		parts = append(parts, quoteIdent(k)+" "+quoteLiteral(s.Options[k]))
+	}
+	return "CREATE TEMPORARY SECRET " + quoteIdent(s.Name) + " (" + strings.Join(parts, ", ") + ")", nil
+}
+
+// wrap membungkus error dengan nama operasi; error izin DuckDB (guardrail
+// G-07) ditandai engine.ErrPermission.
+func wrap(op string, err error) error {
+	var de *duckdbdrv.Error
+	if errors.As(err, &de) && de.Type == duckdbdrv.ErrorTypePermission {
+		return fmt.Errorf("%s: %w: %w", op, engine.ErrPermission, err)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
+func quoteLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
 // noClose menyembunyikan Close connector agar sql.DB.Close tidak menutup database.
 type noClose struct{ driver.Connector }
@@ -87,19 +177,19 @@ func (e *Engine) conn(ctx context.Context) (*duckdbdrv.Conn, error) {
 func (e *Engine) Query(ctx context.Context, query string, args ...any) (array.RecordReader, error) {
 	c, err := e.conn(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("duckdb.Query: %w", err)
+		return nil, wrap("duckdb.Query", err)
 	}
 	st := engine.StatsFrom(ctx)
 	if err := enableProfiling(ctx, c, st); err != nil {
-		return nil, errors.Join(fmt.Errorf("duckdb.Query: %w", err), c.Close())
+		return nil, errors.Join(wrap("duckdb.Query", err), c.Close())
 	}
 	ar, err := duckdbdrv.NewArrowFromConn(c)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("duckdb.Query: %w", err), c.Close())
+		return nil, errors.Join(wrap("duckdb.Query", err), c.Close())
 	}
 	rdr, err := ar.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("duckdb.Query: %w", err), c.Close())
+		return nil, errors.Join(wrap("duckdb.Query", err), c.Close())
 	}
 	return &connReader{RecordReader: rdr, conn: c, st: st}, nil
 }
@@ -122,24 +212,55 @@ func (r *connReader) Release() {
 	}
 }
 
+// Snapshot lihat engine.Engine.
+func (e *Engine) Snapshot(ctx context.Context) (engine.Snapshot, error) {
+	c, err := e.conn(ctx)
+	if err != nil {
+		return nil, wrap("duckdb.Snapshot", err)
+	}
+	if _, err := c.ExecContext(ctx, "BEGIN TRANSACTION", nil); err != nil {
+		return nil, errors.Join(wrap("duckdb.Snapshot", err), c.Close())
+	}
+	return &snapshot{c: c}, nil
+}
+
+type snapshot struct{ c *duckdbdrv.Conn }
+
+func (s *snapshot) Query(ctx context.Context, query string, args ...any) (array.RecordReader, error) {
+	ar, err := duckdbdrv.NewArrowFromConn(s.c)
+	if err != nil {
+		return nil, wrap("duckdb.Snapshot.Query", err)
+	}
+	rdr, err := ar.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, wrap("duckdb.Snapshot.Query", err)
+	}
+	return rdr, nil
+}
+
+func (s *snapshot) Close() error {
+	_, err := s.c.ExecContext(context.Background(), "ROLLBACK", nil)
+	return errors.Join(err, s.c.Close())
+}
+
 // Exec lihat engine.Engine.
 func (e *Engine) Exec(ctx context.Context, query string, args ...any) (int64, error) {
 	c, err := e.conn(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("duckdb.Exec: %w", err)
+		return 0, wrap("duckdb.Exec", err)
 	}
 	st := engine.StatsFrom(ctx)
 	defer closeConn(context.WithoutCancel(ctx), c, st)
 	if err := enableProfiling(ctx, c, st); err != nil {
-		return 0, fmt.Errorf("duckdb.Exec: %w", err)
+		return 0, wrap("duckdb.Exec", err)
 	}
 	res, err := c.ExecContext(ctx, query, namedArgs(args))
 	if err != nil {
-		return 0, fmt.Errorf("duckdb.Exec: %w", err)
+		return 0, wrap("duckdb.Exec", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("duckdb.Exec: %w", err)
+		return 0, wrap("duckdb.Exec", err)
 	}
 	return n, nil
 }
@@ -148,20 +269,20 @@ func (e *Engine) Exec(ctx context.Context, query string, args ...any) (int64, er
 func (e *Engine) Describe(ctx context.Context, query string) (engine.StatementInfo, error) {
 	c, err := e.conn(ctx)
 	if err != nil {
-		return engine.StatementInfo{}, fmt.Errorf("duckdb.Describe: %w", err)
+		return engine.StatementInfo{}, wrap("duckdb.Describe", err)
 	}
 	defer func() { _ = c.Close() }()
 	// Prepare, bukan PrepareContext: PrepareContext duckdb-go mengeksekusi
 	// semua statement kecuali yang terakhir pada input multi-statement.
 	ds, err := c.Prepare(query)
 	if err != nil {
-		return engine.StatementInfo{}, fmt.Errorf("duckdb.Describe: %w", err)
+		return engine.StatementInfo{}, wrap("duckdb.Describe", err)
 	}
 	defer func() { _ = ds.Close() }()
 	st := ds.(*duckdbdrv.Stmt)
 	typ, err := st.StatementType()
 	if err != nil {
-		return engine.StatementInfo{}, fmt.Errorf("duckdb.Describe: %w", err)
+		return engine.StatementInfo{}, wrap("duckdb.Describe", err)
 	}
 	info := engine.StatementInfo{NumParams: st.NumInput(), ReturnsRows: returnsRows(typ)}
 	if typ == duckdbdrv.STATEMENT_TYPE_SELECT {
@@ -238,7 +359,7 @@ func (e *Engine) TableTypes(ctx context.Context) (array.RecordReader, error) {
 func (e *Engine) TableSchema(ctx context.Context, catalog, schema, table string) (*arrow.Schema, error) {
 	rdr, err := e.Query(ctx, "SELECT * FROM "+quoteIdent(catalog)+"."+quoteIdent(schema)+"."+quoteIdent(table)+" LIMIT 0")
 	if err != nil {
-		return nil, fmt.Errorf("duckdb.TableSchema: %w", err)
+		return nil, wrap("duckdb.TableSchema", err)
 	}
 	defer rdr.Release()
 	return rdr.Schema(), nil
@@ -260,7 +381,7 @@ func (e *Engine) Close() error {
 		return nil
 	}
 	if err := e.connector.Close(); err != nil {
-		return fmt.Errorf("duckdb.Close: %w", err)
+		return wrap("duckdb.Close", err)
 	}
 	return nil
 }

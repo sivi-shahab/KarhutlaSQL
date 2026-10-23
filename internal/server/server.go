@@ -36,6 +36,36 @@ type Options struct {
 	// Health dipanggil oleh gRPC health Check; nil = selalu SERVING.
 	Health func(context.Context) error
 	Drain  time.Duration
+	// Actions tipe Flight DoAction tambahan (admin, G-12) → handler (hasil
+	// satu body). Tipe lain diteruskan ke server Flight SQL.
+	Actions map[string]func(ctx context.Context, body []byte) ([]byte, error)
+}
+
+// actionServer menambahkan DoAction kustom di depan server Flight SQL.
+type actionServer struct {
+	flight.FlightServer
+	actions map[string]func(context.Context, []byte) ([]byte, error)
+}
+
+func (a actionServer) DoAction(cmd *flight.Action, stream flight.FlightService_DoActionServer) error {
+	h, ok := a.actions[cmd.GetType()]
+	if !ok {
+		return a.FlightServer.DoAction(cmd, stream)
+	}
+	res, err := h(stream.Context(), cmd.GetBody())
+	if err != nil {
+		return err
+	}
+	return stream.Send(&flight.Result{Body: res})
+}
+
+func (a actionServer) ListActions(e *flight.Empty, stream flight.FlightService_ListActionsServer) error {
+	for typ := range a.actions {
+		if err := stream.Send(&flight.ActionType{Type: typ, Description: "KarhutlaSQL admin action (JSON)"}); err != nil {
+			return err
+		}
+	}
+	return a.FlightServer.ListActions(e, stream)
 }
 
 // Serve melayani srv di lis sampai ctx selesai, lalu drain maksimal opts.Drain
@@ -46,7 +76,7 @@ func Serve(ctx context.Context, lis net.Listener, srv fsql.Server, opts Options,
 		gopts = append(gopts, grpc.Creds(credentials.NewTLS(opts.TLS)))
 	}
 	gs := grpc.NewServer(gopts...)
-	flight.RegisterFlightServiceServer(gs, fsql.NewFlightServer(srv))
+	flight.RegisterFlightServiceServer(gs, actionServer{FlightServer: fsql.NewFlightServer(srv), actions: opts.Actions})
 	healthpb.RegisterHealthServer(gs, &healthServer{check: opts.Health})
 
 	errc := make(chan error, 1)

@@ -14,6 +14,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/bankmega/karhutlasql/internal/accesslog"
+	"github.com/bankmega/karhutlasql/internal/approval"
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/session"
@@ -28,6 +30,10 @@ type Options struct {
 	// allowlist, role dari policy).
 	Verify func(ctx context.Context, token string) (auth.Identity, error)
 	Audit  *audit.Logger
+	// AccessLog sumber export access-history (DSAR); nil = endpoint 404.
+	AccessLog *accesslog.Log
+	// Gate four-eyes policy/classification (G-11); nil = tanpa file policy.
+	Gate *approval.Gate
 }
 
 // Handler mux HTTP admin: /healthz dan /metrics tanpa auth; /admin/* wajib
@@ -63,7 +69,54 @@ func Handler(o Options) http.Handler {
 		o.Audit.Emit(auth.WithIdentity(r.Context(), id), audit.Event{Type: audit.SessionKilled, User: id.Subject, Source: id.Source, Peer: r.RemoteAddr, Target: target, Via: "http"})
 		w.WriteHeader(http.StatusNoContent)
 	}))
+	mux.HandleFunc("GET /admin/access-history", o.admin(o.exportAccess))
+	mux.HandleFunc("GET /admin/policy", o.admin(o.httpAction(ActionPolicyStatus)))
+	mux.HandleFunc("POST /admin/policy/{document}/reload", o.admin(o.httpAction(ActionReloadPolicy)))
+	mux.HandleFunc("POST /admin/policy/{document}/approve", o.admin(o.httpAction(ActionApprovePolicy)))
 	return mux
+}
+
+// exportAccess GET /admin/access-history?since=&until=(YYYY-MM-DD UTC,
+// inklusif; default 7 hari terakhir)&user=&table=&column= → NDJSON (DSAR,
+// G-05). Setiap export tercatat di audit.
+func (o Options) exportAccess(w http.ResponseWriter, r *http.Request, id auth.Identity) {
+	if o.AccessLog == nil {
+		http.Error(w, "access history is not configured", http.StatusNotFound)
+		return
+	}
+	q := r.URL.Query()
+	now := time.Now().UTC()
+	since, until := now.AddDate(0, 0, -7), now.Add(time.Minute)
+	for name, dst := range map[string]*time.Time{"since": &since, "until": &until} {
+		if v := q.Get(name); v != "" {
+			t, err := time.Parse(time.DateOnly, v)
+			if err != nil {
+				http.Error(w, name+" must be YYYY-MM-DD", http.StatusBadRequest)
+				return
+			}
+			if name == "until" {
+				t = t.AddDate(0, 0, 1)
+			}
+			*dst = t
+		}
+	}
+	recs, err := o.AccessLog.Query(r.Context(), since, until)
+	if err != nil {
+		http.Error(w, "access history unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	match := func(want, got string) bool { return want == "" || strings.EqualFold(want, got) }
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	enc := json.NewEncoder(w)
+	n := 0
+	for _, rec := range recs {
+		if match(q.Get("user"), rec.User) && match(q.Get("table"), rec.Table) && match(q.Get("column"), rec.Column) {
+			n++
+			_ = enc.Encode(rec)
+		}
+	}
+	o.Audit.Emit(auth.WithIdentity(r.Context(), id), audit.Event{Type: audit.AccessHistoryExport, User: id.Subject, Source: id.Source,
+		Peer: r.RemoteAddr, Detail: r.URL.RawQuery, Rows: int64(n), Via: "http"})
 }
 
 // admin membungkus h dengan verifikasi Bearer (token belum di-kill) + role admin.

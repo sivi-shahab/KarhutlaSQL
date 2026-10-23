@@ -396,6 +396,9 @@ func Load(path string) (*Store, error) {
 	return s, nil
 }
 
+// NewStore Store kosong yang diisi lewat Prepare (approval.Gate).
+func NewStore() *Store { return &Store{} }
+
 // Static Store berisi policy tetap (Reload no-op).
 func Static(p *Policy) *Store {
 	s := &Store{}
@@ -418,6 +421,16 @@ func (s *Store) Reload() error {
 	}
 	s.p.Store(p)
 	return nil
+}
+
+// Prepare memvalidasi isi policy; activate menjadikannya aktif (dipakai
+// approval.Gate, G-11).
+func (s *Store) Prepare(b []byte) (func(), error) {
+	p, err := Parse(b)
+	if err != nil {
+		return nil, err
+	}
+	return func() { s.p.Store(p) }, nil
 }
 
 // Policy policy aktif.

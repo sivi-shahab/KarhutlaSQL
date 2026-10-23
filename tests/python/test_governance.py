@@ -54,5 +54,6 @@ def test_acceptance9_ai_sandbox(oidc_server, keycloak):
         assert len(run(c, "SELECT * FROM warehouse.nasabah LIMIT 10")) == 10
         with pytest.raises(Exception, match="(?i)select-only"):
             run(c, "INSERT INTO sandbox.s VALUES (1)")
-        with pytest.raises(Exception, match="(?i)select-only"):
+        # COPY ke luar allowed-directories sudah ditolak guardrail engine (G-07) saat analisis.
+        with pytest.raises(Exception, match="(?i)select-only|permission"):
             run(c, "COPY warehouse.nasabah TO '/tmp/x.csv'")

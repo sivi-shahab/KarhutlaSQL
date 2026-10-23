@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/bankmega/karhutlasql/internal/accesslog"
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/authz"
@@ -24,7 +26,7 @@ import (
 
 // safeFunctions table function yang tidak membaca data di luar catalog dan
 // boleh dipakai tanpa izin admin. karhutla_* menegakkan izinnya sendiri.
-var safeFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST", "KARHUTLA_SESSIONS", "KARHUTLA_METRICS", "KARHUTLA_KILL_SESSION", "KARHUTLA_QUERY_HISTORY"}
+var safeFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST", "KARHUTLA_SESSIONS", "KARHUTLA_METRICS", "KARHUTLA_KILL_SESSION", "KARHUTLA_QUERY_HISTORY", "KARHUTLA_ACCESS_HISTORY", "KARHUTLA_ACCESS_HISTORY_RANGE", "KARHUTLA_REPORT_RUN"}
 
 // writeKinds statement yang target tulisnya ditentukan sqlrewrite.
 var writeKinds = []string{"INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"}
@@ -34,6 +36,13 @@ type plan struct {
 	sql    string // SQL asli, atau hasil rewrite masking/RLS/LIMIT
 	nonce  string // nonce rewrite (ctx karhutla_mask_hmac); "" bila tidak ada
 	limits authz.Limits
+	// final analisis SQL yang benar-benar dieksekusi (kolom yang dibaca, G-05).
+	final engine.Analysis
+	// tags/masks: tabel → kolom → tag / mask yang diterapkan; filters: tabel →
+	// row filter yang diterapkan; writes: objek target tulis.
+	tags, masks map[string]map[string]string
+	filters     map[string]string
+	writes      []string
 	// control statement admin yang hanya memakai fungsi karhutla_* tanpa
 	// tabel: tidak antre di resource group (kill/monitoring tetap jalan saat
 	// antrean penuh). Hanya admin: fungsi skalar berat tidak terlihat di
@@ -62,6 +71,7 @@ func needs(a engine.Analysis, sql string) ([]authz.Need, error) {
 	}
 	switch {
 	case a.Kind == "SELECT", a.Kind == "TRANSACTION": // BEGIN/COMMIT: koneksi per statement, no-op
+	case a.Kind == "CALL" && len(a.Functions) > 0: // fungsi non-safe sudah butuh admin di atas
 	case slices.Contains(writeKinds, a.Kind):
 		targets, err := sqlrewrite.WriteTargets(sql)
 		if err != nil {
@@ -85,7 +95,7 @@ func control(a engine.Analysis) bool {
 		return false
 	}
 	for _, f := range a.Functions {
-		if !strings.HasPrefix(f, "KARHUTLA_") {
+		if !strings.HasPrefix(f, "KARHUTLA_") || f == "KARHUTLA_REPORT_RUN" { // report = beban berat: antre
 			return false
 		}
 	}
@@ -125,6 +135,12 @@ func (s *Server) authorize(ctx context.Context, sql string) (plan, error) {
 	if err != nil {
 		return plan{}, s.deny(ctx, a.Kind, sql, err)
 	}
+	for _, n := range ns {
+		if n.Action == authz.Write {
+			pl.writes = append(pl.writes, n.Object)
+		}
+	}
+	pl.final = a
 	if err := s.govern(ctx, &pl, a, p, id); err != nil {
 		return plan{}, s.deny(ctx, a.Kind, sql, err)
 	}
@@ -138,7 +154,7 @@ func (s *Server) authorize(ctx context.Context, sql string) (plan, error) {
 		if err != nil {
 			return plan{}, s.deny(ctx, a.Kind, sql, fmt.Errorf("cannot apply row limit: %w", err))
 		}
-		pl.sql = wrapped
+		pl.sql, pl.final = wrapped, wa
 	}
 	return pl, nil
 }
@@ -152,8 +168,10 @@ func (s *Server) govern(ctx context.Context, pl *plan, a engine.Analysis, p *aut
 	nonce := newNonce()
 	guard := classification.Literal(nonce) + " = " + classification.Literal(nonce)
 	subs := map[string]string{}
+	pl.tags, pl.masks, pl.filters = map[string]map[string]string{}, map[string]map[string]string{}, map[string]string{}
 	for _, t := range a.Tables {
 		tags := cls.TableTags(t)
+		pl.tags[t] = tags
 		masked := map[string]classification.Mask{}
 		for col, tag := range tags {
 			if !p.Unmasked(id.Roles, tag) {
@@ -172,6 +190,13 @@ func (s *Server) govern(ctx context.Context, pl *plan, a engine.Analysis, p *aut
 			return err
 		}
 		subs[t] = sub
+		pl.masks[t] = map[string]string{}
+		for col, m := range masked {
+			pl.masks[t][col] = m.Mask
+		}
+		if filtered {
+			pl.filters[t] = pred
+		}
 	}
 	if len(subs) == 0 {
 		return nil
@@ -197,8 +222,54 @@ func (s *Server) govern(ctx context.Context, pl *plan, a engine.Analysis, p *aut
 			return fmt.Errorf("%w: rewrite changed table set (%s)", sqlrewrite.ErrRewrite, t)
 		}
 	}
-	pl.sql, pl.nonce = out, nonce
+	pl.sql, pl.nonce, pl.final = out, nonce, ra
+	s.auditGovernance(ctx, pl)
 	return nil
+}
+
+// auditGovernance mencatat mask_applied & row_filter_applied per tabel.
+func (s *Server) auditGovernance(ctx context.Context, pl *plan) {
+	id, _ := auth.FromContext(ctx)
+	for _, t := range slices.Sorted(maps.Keys(pl.masks)) {
+		if len(pl.masks[t]) > 0 {
+			var parts []string
+			for _, col := range slices.Sorted(maps.Keys(pl.masks[t])) {
+				parts = append(parts, col+":"+pl.masks[t][col])
+			}
+			s.opts.Audit.Emit(ctx, audit.Event{Type: audit.MaskApplied, User: id.Subject, Source: id.Source, Object: t, Detail: strings.Join(parts, ",")})
+		}
+		if f, ok := pl.filters[t]; ok {
+			s.opts.Audit.Emit(ctx, audit.Event{Type: audit.RowFilterApplied, User: id.Subject, Source: id.Source, Object: t, Detail: f})
+		}
+	}
+}
+
+// access record access-history (G-05) statement yang dieksekusi: satu per
+// kolom yang dibaca (tabel tanpa kolom → satu record tanpa kolom) dan satu
+// per objek target tulis.
+func (pl plan) access(base accesslog.Record) []accesslog.Record {
+	var out []accesslog.Record
+	for _, t := range pl.final.Tables {
+		r := base
+		r.Action, r.Table, r.RowFilter = "read", t, pl.filters[t]
+		cols := pl.final.Columns[t]
+		if len(cols) == 0 {
+			out = append(out, r)
+		}
+		for _, c := range cols {
+			r.Column, r.Tag, r.Policy = c, pl.tags[t][c], pl.masks[t][c]
+			if r.Tag != "" && r.Policy == "" {
+				r.Policy = "unmasked"
+			}
+			out = append(out, r)
+		}
+	}
+	for _, w := range pl.writes {
+		r := base
+		r.Action, r.Table = "write", w
+		out = append(out, r)
+	}
+	return out
 }
 
 // subselect SELECT pengganti tabel: semua kolom (yang bertag di-mask), row

@@ -10,8 +10,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/bankmega/karhutlasql/internal/accesslog"
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
+	"github.com/bankmega/karhutlasql/internal/objstore"
 	"github.com/bankmega/karhutlasql/internal/session"
 )
 
@@ -35,10 +37,15 @@ func TestHandler(t *testing.T) {
 	pr := prometheus.NewRegistry()
 	pr.MustRegister(prometheus.NewCounter(prometheus.CounterOpts{Name: "x_total"}))
 	sk := &sink{}
+	al := accesslog.New(accesslog.Options{Store: objstore.Dir(t.TempDir())})
+	al.Append(accesslog.Record{Time: time.Now(), User: "ana", Table: "w.main.nasabah", Column: "nik", Policy: "partial"},
+		accesslog.Record{Time: time.Now(), User: "budi", Table: "w.main.nasabah", Column: "nik"},
+		accesslog.Record{Time: time.Now().AddDate(0, 0, -30), User: "ana", Table: "w.main.nasabah", Column: "nik"})
 	h := Handler(Options{
-		Health:   func(context.Context) error { return nil },
-		Gatherer: pr,
-		Sessions: reg,
+		AccessLog: al,
+		Health:    func(context.Context) error { return nil },
+		Gatherer:  pr,
+		Sessions:  reg,
 		Verify: func(_ context.Context, tok string) (auth.Identity, error) {
 			if id, ok := ids[tok]; ok {
 				return id, nil
@@ -70,6 +77,8 @@ func TestHandler(t *testing.T) {
 		{"DELETE", "/admin/sessions/nope", "tok-admin", 404},
 		{"DELETE", "/admin/sessions/S3", "tok-admin", 204},
 		{"GET", "/admin/sessions", "tok-other", 401}, // token sesi yang di-kill
+		{"GET", "/admin/access-history", "tok-user", 403},
+		{"GET", "/admin/access-history?since=kemarin", "tok-admin", 400},
 	}
 	for _, tt := range tests {
 		if w := do(tt.method, tt.path, tt.tok); w.Code != tt.want {
@@ -84,5 +93,13 @@ func TestHandler(t *testing.T) {
 	}
 	if len(sk.events) != 1 || sk.events[0].Type != audit.SessionKilled || sk.events[0].Target != "S3" || sk.events[0].SessionID != "S1" {
 		t.Errorf("audit = %+v", sk.events)
+	}
+	// DSAR: filter user/kolom, default 7 hari terakhir, tercatat di audit.
+	w := do("GET", "/admin/access-history?user=ANA&column=nik", "tok-admin")
+	if lines := strings.Split(strings.TrimSpace(w.Body.String()), "\n"); w.Code != 200 || len(lines) != 1 || !strings.Contains(lines[0], `"policy":"partial"`) {
+		t.Errorf("export = %d %s", w.Code, w.Body)
+	}
+	if ev := sk.events[len(sk.events)-1]; ev.Type != audit.AccessHistoryExport || ev.Rows != 1 || ev.Detail != "user=ANA&column=nik" {
+		t.Errorf("export audit = %+v", ev)
 	}
 }

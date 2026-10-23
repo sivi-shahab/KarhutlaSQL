@@ -3,20 +3,33 @@
 package flightsql
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	"github.com/golang-jwt/jwt/v5"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/bankmega/karhutlasql/internal/accesslog"
+	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
 	"github.com/bankmega/karhutlasql/internal/authz"
 	"github.com/bankmega/karhutlasql/internal/classification"
+	"github.com/bankmega/karhutlasql/internal/objstore"
+	"github.com/bankmega/karhutlasql/internal/report"
 )
 
 const govPolicy = `
@@ -61,8 +74,11 @@ CREATE TABLE sandbox.main.s (x VARCHAR);`
 
 type govEnv struct {
 	*testEnv
-	tok    map[string]string
-	secret string // prefix NIK mentah, acak per env: tidak bisa ditebak query
+	tok     map[string]string
+	access  *accesslog.Log
+	archive objstore.Dir
+	pub     ed25519.PublicKey
+	secret  string // prefix NIK mentah, acak per env: tidak bisa ditebak query
 }
 
 func startGov(t testing.TB) *govEnv {
@@ -85,7 +101,11 @@ func startGov(t testing.TB) *govEnv {
 		t.Fatal(err)
 	}
 	secret := newNonce() + "-"
-	env := start(t, envOpts{initSQL: strings.ReplaceAll(govInit, "{{SECRET}}", secret), policy: authz.Static(p), oidc: v, classification: cls, maskKey: []byte("0123456789abcdef0123456789abcdef")})
+	archive := objstore.Dir(t.TempDir())
+	al := accesslog.New(accesslog.Options{Store: archive})
+	signer, pub := testSigner(t)
+	env := start(t, envOpts{initSQL: strings.ReplaceAll(govInit, "{{SECRET}}", secret), policy: authz.Static(p), oidc: v, classification: cls,
+		maskKey: []byte("0123456789abcdef0123456789abcdef"), accessLog: al, archive: archive, signer: signer, reports: govReports})
 	tok := map[string]string{}
 	for user, claims := range map[string]jwt.MapClaims{
 		"ops":     {"groups": []string{"ops"}},
@@ -97,7 +117,7 @@ func startGov(t testing.TB) *govEnv {
 		claims["email"], claims["sid"], claims["preferred_username"] = user+"@bankmega.com", "s-"+user, user
 		tok[user] = idp.token(t, claims)
 	}
-	return &govEnv{testEnv: env, tok: tok, secret: secret}
+	return &govEnv{testEnv: env, tok: tok, secret: secret, access: al, archive: archive, pub: pub}
 }
 
 // rows menjalankan sql sebagai user; setiap baris = kolom digabung "|".
@@ -260,4 +280,150 @@ func FuzzGovernance(f *testing.F) {
 			t.Fatalf("LEAK %q → %s", q, s)
 		}
 	})
+}
+
+// Acceptance #7 bagian kedua (G-05): access-history mencatat kolom & policy.
+func TestGovernance_AccessHistory(t *testing.T) {
+	g := startGov(t)
+	if _, err := g.rows("analyst", "SELECT nik, nama FROM warehouse.nasabah WHERE phone <> ''"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.rows("cabang", "SELECT count(*) FROM warehouse.nasabah"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.access.Flush(context.Background()); err != nil { // sebagian dari penyimpanan, sebagian buffer
+		t.Fatal(err)
+	}
+	if _, err := g.cl.ExecuteUpdate(bearer(g.tok["analyst"]), "INSERT INTO sandbox.main.s VALUES ('x')"); err != nil {
+		t.Fatal(err)
+	}
+	const q = `SELECT concat_ws('|', user, action, table_name, coalesce(column_name, '-'), coalesce(tag, '-'), coalesce(policy, '-'), coalesce(row_filter, '-'))
+		FROM karhutla_access_history() WHERE status = 'OK' AND table_name NOT LIKE 'karhutla%' ORDER BY ALL`
+	got, err := g.rows("ops", q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"analyst|read|warehouse.main.nasabah|nik|pii.nik|partial|-|",
+		"analyst|read|warehouse.main.nasabah|nama|-|-|-|",
+		"analyst|read|warehouse.main.nasabah|phone|pii.phone|hash_hmac|-|", // kolom filter ikut tercatat
+		"analyst|write|sandbox.main.s|-|-|-|-|",
+		"cabang|read|warehouse.main.nasabah|branch_code|-|-|(branch_code = '0123')|",
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("missing %q in\n%s", want, strings.Join(got, "\n"))
+		}
+	}
+	// User non-admin hanya melihat miliknya.
+	mine, err := g.rows("cabang", q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range mine {
+		if !strings.HasPrefix(r, "cabang|") {
+			t.Errorf("cabang sees %q", r)
+		}
+	}
+	if n := len(g.audit.ofType("mask_applied")); n == 0 {
+		t.Error("no mask_applied audit event")
+	}
+	if ev := g.audit.ofType("row_filter_applied"); len(ev) == 0 || ev[0].Object != "warehouse.main.nasabah" {
+		t.Errorf("row_filter_applied = %+v", ev)
+	}
+}
+
+func TestGovernance_AccessHistoryRange(t *testing.T) {
+	g := startGov(t)
+	if _, err := g.rows("analyst", "SELECT nik FROM warehouse.nasabah"); err != nil {
+		t.Fatal(err)
+	}
+	for q, want := range map[string]string{
+		"SELECT count(*) > 0 FROM karhutla_access_history_range(current_date - 1, current_date + 1) WHERE column_name = 'nik'": "true|",
+		"SELECT count(*) FROM karhutla_access_history_range(DATE '2020-01-01', DATE '2020-01-02') WHERE column_name = 'nik'":   "0|",
+	} {
+		if got, err := g.rows("ops", q); err != nil || len(got) != 1 || got[0] != want {
+			t.Errorf("%s = %v %v", q, got, err)
+		}
+	}
+}
+
+var govReports = map[string]report.Def{
+	"nasabah_cabang": {Roles: []string{"analyst", "admin"}, SQL: "SELECT nik, branch_code FROM warehouse.main.nasabah ORDER BY nama",
+		Asserts: []report.Assert{{Name: "ada_data", SQL: "SELECT count(*) = 10 FROM warehouse.main.nasabah"}}},
+	"gagal_gate": {Roles: []string{"analyst"}, SQL: "SELECT 1",
+		Asserts: []report.Assert{{Name: "nik_kosong", SQL: "SELECT count(*) = 0 FROM warehouse.main.nasabah"}}},
+}
+
+func testSigner(t testing.TB) (*report.Signer, ed25519.PublicKey) {
+	t.Helper()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	der, _ := x509.MarshalPKCS8PrivateKey(priv)
+	p := filepath.Join(t.TempDir(), "report.key")
+	if err := os.WriteFile(p, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := report.LoadSigner(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, pub
+}
+
+// Acceptance #10 (G-10): report terikat snapshot, manifest bertanda tangan.
+func TestReportRun(t *testing.T) {
+	g := startGov(t)
+	got, err := g.rows("analyst", "CALL karhutla_report_run('nasabah_cabang')")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("report: %v %v", got, err)
+	}
+	f := strings.Split(got[0], "|") // report_id|name|snapshot|rows|location|result_sha|manifest_sha|
+	if f[3] != "10" || !strings.HasPrefix(f[4], "reports/nasabah_cabang/") {
+		t.Fatalf("row %q", got[0])
+	}
+	read := func(k string) []byte {
+		b, err := g.archive.Get(context.Background(), f[4]+k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	result := read("result.parquet")
+	m, err := report.Verify(read("manifest.json"), read("manifest.json.sig"), result, g.pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.SnapshotID != f[2] || m.User != "analyst" || len(m.Asserts) != 1 || !m.Asserts[0].Passed || m.Tables["warehouse.main.nasabah"] == "" {
+		t.Errorf("manifest %+v", m)
+	}
+	// Hasil dieksekusi sebagai pemanggil: NIK ter-mask.
+	tbl, err := pqarrow.ReadTable(context.Background(), bytes.NewReader(result), nil, pqarrow.ArrowReadProperties{}, memory.DefaultAllocator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tbl.Release()
+	nik := tbl.Column(0).Data().Chunk(0).(*array.String)
+	if v := nik.Value(0); strings.Contains(v, g.secret) || !strings.HasPrefix(v, "***") {
+		t.Errorf("report nik not masked: %q", v)
+	}
+	// Snapshot sama selama data sama.
+	again, _ := g.rows("ops", "CALL karhutla_report_run('nasabah_cabang')")
+	if strings.Split(again[0], "|")[2] != f[2] {
+		t.Errorf("snapshot id changed without data change: %s vs %s", again[0], f[2])
+	}
+
+	// DQ gate gagal → FAILED_PRECONDITION + audit.
+	if _, err := g.rows("analyst", "CALL karhutla_report_run('gagal_gate')"); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "nik_kosong") {
+		t.Errorf("gate: %v", err)
+	}
+	// Role tidak diizinkan.
+	if _, err := g.rows("cabang", "SELECT * FROM karhutla_report_run('nasabah_cabang')"); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("role: %v", err)
+	}
+	var statuses []string
+	for _, e := range g.audit.ofType(audit.ReportRun) {
+		statuses = append(statuses, e.Status)
+	}
+	if strings.Join(statuses, ",") != "OK,OK,FailedPrecondition,PermissionDenied" {
+		t.Errorf("report_run audit %v", statuses)
+	}
 }

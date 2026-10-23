@@ -72,6 +72,8 @@ func TestLoad_Invalid(t *testing.T) {
 		{"negative timeout", []string{"--query-timeout", "-1"}},
 		{"negative max concurrent", []string{"--max-concurrent", "-1"}},
 		{"zero rate burst", []string{"--rate-limit", "5", "--rate-burst", "0"}},
+		{"archive dir and s3", []string{"--archive-dir", "x", "--archive-s3-endpoint", "h:9000", "--archive-s3-bucket", "b"}},
+		{"s3 without bucket", []string{"--archive-s3-endpoint", "h:9000"}},
 		{"metrics port clash", []string{"--metrics-port", "31337"}},
 	}
 	for _, tt := range tests {

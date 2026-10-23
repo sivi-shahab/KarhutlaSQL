@@ -26,6 +26,30 @@ policy: ""
 # `mask-key` (>= 32 byte) di auth.existingSecret.
 classification: ""
 
+# Four-eyes (G-11): perubahan policy/classification (ConfigMap baru → restart)
+# menjadi pending sampai disetujui 2 admin berbeda; state di PVC.
+fourEyes: true
+
+# Arsip access-history & report (G-05/G-10): bucket S3/MinIO dengan
+# object-lock. Secret existingSecret berisi key `access-key` & `secret-key`.
+archive:
+  s3:
+    endpoint: ""        # host:port; kosong = arsip mati (dev)
+    bucket: ""
+    region: us-east-1
+    insecure: false
+  existingSecret: ""
+  retention: 87600h     # 10 tahun, COMPLIANCE
+
+# Isi reports.yaml (G-10). Kunci tanda tangan: Secret reportSigning.existingSecret
+# key `report.key` (Ed25519 PKCS#8 PEM).
+reports: ""
+reportSigning:
+  existingSecret: ""
+
+# Residency (G-07): path/prefix URL yang boleh diakses DuckDB.
+allowedDirectories: []
+
 oidc:
   issuer: ""            # mis. https://sso.corp/realms/data; wajib policy
   audience: karhutlasql

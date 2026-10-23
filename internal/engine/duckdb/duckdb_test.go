@@ -16,7 +16,7 @@ import (
 
 func open(t *testing.T, initSQL string) *Engine {
 	t.Helper()
-	e, err := Open(context.Background(), Config{InitSQL: initSQL})
+	e, err := Open(context.Background(), Config{InitSQL: initSQL, Unlocked: true}) // analisis fungsi file; guardrail: TestGuardrail
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,5 +229,76 @@ func TestStats(t *testing.T) {
 	var st engine.Stats
 	if _, err := e.Exec(engine.WithStats(context.Background(), &st), "INSERT INTO t SELECT * FROM range(10)"); err != nil || st.PlanHash == "" {
 		t.Errorf("exec stats %+v %v", st, err)
+	}
+}
+
+func TestGuardrail(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir() + "/"
+	e, err := Open(ctx, Config{AllowedDirectories: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = e.Close() }()
+	for q, ok := range map[string]bool{
+		"COPY (SELECT 1) TO '" + dir + "x.csv'":          true,
+		"COPY (SELECT 1) TO '/tmp/karhutla-outside.csv'": false,
+		"SELECT * FROM read_csv('/etc/passwd')":          false,
+		"ATTACH '/tmp/karhutla-outside.duckdb' AS z":     false,
+		"INSTALL httpfs": false,
+		"CREATE PERSISTENT SECRET p (TYPE s3, KEY_ID 'a', SECRET 'b')": false,
+		"SET enable_external_access = true":                            false,
+		"SET allowed_directories = ['/']":                              false,
+	} {
+		_, err := e.Exec(ctx, q)
+		if (err == nil) != ok {
+			t.Errorf("%s: err = %v", q, err)
+		}
+		if err != nil && strings.HasPrefix(q, "COPY") && !errors.Is(err, engine.ErrPermission) {
+			t.Errorf("%s: not ErrPermission: %v", q, err)
+		}
+	}
+}
+
+func TestSecretSQL(t *testing.T) {
+	allowed := []string{"s3://lake/"}
+	q, err := secretSQL(Secret{Name: "lake", Type: "s3", Scope: "s3://lake/raw/", Options: map[string]string{"secret": "x'y", "key_id": "k"}}, allowed)
+	if err != nil || q != `CREATE TEMPORARY SECRET "lake" (TYPE "s3", SCOPE 's3://lake/raw/', "key_id" 'k', "secret" 'x''y')` {
+		t.Fatalf("%s %v", q, err)
+	}
+	for _, s := range []Secret{
+		{Name: "x", Type: "s3", Scope: "s3://other/"},
+		{Name: "x", Type: "s3", Scope: ""},
+		{Name: "x", Type: "s3", Scope: "s3://lake/", Options: map[string]string{"PERSISTENT": "true"}},
+	} {
+		if _, err := secretSQL(s, allowed); err == nil {
+			t.Errorf("%+v accepted", s)
+		}
+	}
+}
+
+func TestSnapshot(t *testing.T) {
+	e := open(t, "CREATE TABLE t AS SELECT 1 AS i")
+	ctx := context.Background()
+	sn, err := e.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := func(q func(context.Context, string, ...any) (array.RecordReader, error)) []string {
+		rdr, err := q(ctx, "SELECT count(*) FROM t")
+		return rows(t, rdr, err)
+	}
+	before := count(sn.Query)
+	if _, err := e.Exec(ctx, "INSERT INTO t VALUES (2)"); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(sn.Query); got[0] != before[0] || before[0] != "1" {
+		t.Errorf("snapshot sees concurrent insert: %v → %v", before, got)
+	}
+	if err := sn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(e.Query); got[0] != "2" {
+		t.Errorf("after close: %v", got)
 	}
 }

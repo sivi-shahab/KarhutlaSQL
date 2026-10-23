@@ -2,6 +2,8 @@ package flightsql
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,12 +21,15 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/bankmega/karhutlasql/internal/accesslog"
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/authz"
 	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/metrics"
+	"github.com/bankmega/karhutlasql/internal/objstore"
+	"github.com/bankmega/karhutlasql/internal/report"
 	"github.com/bankmega/karhutlasql/internal/scheduler"
 	"github.com/bankmega/karhutlasql/internal/session"
 	"github.com/bankmega/karhutlasql/internal/sqlext"
@@ -51,6 +56,12 @@ type Options struct {
 	DefaultGroup scheduler.Group
 	// History riwayat statement (G-09); nil = tidak dicatat.
 	History *session.History
+	// AccessLog access-history per kolom (G-05); nil = tidak dicatat.
+	AccessLog *accesslog.Log
+	// Report run (G-10): definisi, kunci tanda tangan, arsip hasil.
+	Reports map[string]report.Def
+	Signer  *report.Signer
+	Archive objstore.Store
 	// Profiling isi peak memory & plan hash history dari profiling DuckDB
 	// (+~1–5 ms per statement, ADR 26).
 	Profiling bool
@@ -285,6 +296,7 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 	hq := session.Query{RequestID: audit.RequestID(ctx), SessionID: ss.ID, User: id.Subject, Kind: kind, SQL: s.opts.Audit.Redact(sql), StartedAt: t0}
 	var st engine.Stats
 	var tExec time.Time
+	var pl plan
 	end := func(rows, bytes int64, err error) {
 		cancel()
 		release()
@@ -311,13 +323,30 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 			hq.Duration = time.Since(tExec)
 		}
 		s.opts.History.Add(hq)
+		if s.opts.AccessLog != nil && !tExec.IsZero() {
+			base := accesslog.Record{Time: t0, RequestID: hq.RequestID, SessionID: ss.ID, User: id.Subject, Source: id.Source,
+				Kind: kind, Status: fin.Status, Rows: rows, SQLHash: ev.SQLHash, SQL: ev.SQL}
+			if pl.sql != sql {
+				sum := sha256.Sum256([]byte(pl.sql))
+				base.RewrittenHash = hex.EncodeToString(sum[:])
+			}
+			s.opts.AccessLog.Append(pl.access(base)...)
+		}
 		if s.opts.SlowQuery > 0 && hq.Duration >= s.opts.SlowQuery {
 			s.log.Warn("slow_query", "request_id", hq.RequestID, "session_id", hq.SessionID, "user", hq.User, "resource_group", hq.Group,
 				"status", hq.Status, "queue_ms", hq.QueueWait.Milliseconds(), "duration_ms", hq.Duration.Milliseconds(),
 				"rows", rows, "bytes", bytes, "peak_memory", st.PeakMemory, "plan_hash", st.PlanHash, "sql", hq.SQL)
 		}
 	}
-	pl, err := s.authorize(qctx, sql)
+	if s.opts.AccessLog != nil {
+		if err := s.opts.AccessLog.Healthy(); err != nil { // fail-closed: akses harus tercatat
+			s.log.Error("access history unavailable", "err", err)
+			err = status.Error(codes.Unavailable, "access history unavailable; statements are refused until it recovers")
+			end(0, 0, err)
+			return nil, plan{}, nil, err
+		}
+	}
+	pl, err = s.authorize(qctx, sql)
 	if err != nil {
 		end(0, 0, err)
 		return nil, plan{}, nil, err
@@ -635,10 +664,16 @@ func toStatus(ctx context.Context, err error) error {
 	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 		return status.Error(codes.Canceled, err.Error())
 	}
+	if errors.Is(err, engine.ErrPermission) {
+		return status.Error(codes.PermissionDenied, err.Error())
+	}
 	// Error UDF melewati DuckDB sebagai teks; keputusan izin sudah dibuat di
 	// sqlext, di sini hanya pemetaan kode.
 	if strings.Contains(err.Error(), sqlext.ErrPermissionDenied.Error()+":") {
 		return status.Error(codes.PermissionDenied, err.Error())
+	}
+	if strings.Contains(err.Error(), sqlext.ErrFailedPrecondition.Error()+":") {
+		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return status.Error(codes.InvalidArgument, err.Error())
 }

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,26 @@ type Config struct {
 	RateBurst                int
 	SlowQueryThreshold       time.Duration
 	QueryProfiling           bool
+
+	// Arsip governance (access-history, report): direktori lokal (dev) atau S3 WORM.
+	ArchiveDir                                   string
+	ArchiveS3Endpoint, ArchiveS3Bucket           string
+	ArchiveS3Region                              string
+	ArchiveS3AccessKeyEnv, ArchiveS3SecretKeyEnv string
+	ArchiveS3Insecure                            bool
+	ArchiveRetention                             time.Duration
+	AccessLogFlushInterval                       time.Duration
+
+	// Report run (G-10).
+	ReportsFile, ReportSigningKeyFile string
+
+	// Four-eyes policy/classification (G-11).
+	FourEyes bool
+	StateDir string
+
+	// Guardrail residency (G-07).
+	AllowedDirectories []string
+	DuckDBSecretsFile  string
 
 	HealthCheckQuery string
 	MetricsPort      int // 0 = HTTP admin mati
@@ -96,6 +117,21 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.Int("rate-burst", 20, "burst token bucket rate limit")
 	fs.Duration("slow-query-threshold", 10*time.Second, "eksekusi (di luar antre) selama ini dicatat ke log slow_query; 0 = mati")
 	fs.Bool("query-profiling", true, "profiling DuckDB per statement untuk peak memory & plan hash di karhutla_query_history() (+~1-5 ms/statement)")
+	fs.String("archive-dir", "", "arsip access-history & report di direktori lokal (dev; bukan WORM)")
+	fs.String("archive-s3-endpoint", "", "endpoint S3/MinIO arsip (host:port); bucket wajib object-lock")
+	fs.String("archive-s3-bucket", "", "bucket arsip (object-lock aktif)")
+	fs.String("archive-s3-region", "us-east-1", "region bucket arsip")
+	fs.String("archive-s3-access-key-env", "KARHUTLASQL_ARCHIVE_ACCESS_KEY", "nama env var access key S3 arsip")
+	fs.String("archive-s3-secret-key-env", "KARHUTLASQL_ARCHIVE_SECRET_KEY", "nama env var secret key S3 arsip")
+	fs.Bool("archive-s3-insecure", false, "S3 arsip lewat http (dev)")
+	fs.Duration("archive-retention", 87600*time.Hour, "retensi object-lock COMPLIANCE objek arsip (default 10 tahun)")
+	fs.Duration("access-log-flush-interval", 30*time.Second, "interval flush access-history ke arsip")
+	fs.String("reports-file", "", "definisi report (reports.yaml) untuk karhutla_report_run()")
+	fs.String("report-signing-key-file", "", "kunci privat Ed25519 PKCS#8 PEM (0600) penanda tangan manifest report")
+	fs.Bool("four-eyes", true, "perubahan policy/classification aktif setelah 2 persetujuan admin berbeda (G-11)")
+	fs.String("state-dir", "", "direktori state server (persetujuan policy, 0700); default <dir database>/karhutlasql-state")
+	fs.StringSlice("allowed-directories", nil, "path/prefix URL yang boleh diakses DuckDB (COPY/read_*/ATTACH), mis. /data/export/,s3://lake/; selain itu ditolak")
+	fs.String("duckdb-secrets-file", "", "YAML TEMPORARY SECRET DuckDB yang diinjeksi server (nilai rahasia dari env; scope wajib di allowed-directories)")
 	fs.String("health-check-query", "SELECT 1", "query untuk gRPC health dan /healthz")
 	fs.Int("metrics-port", 9090, "port HTTP admin (/healthz); 0 = mati")
 	fs.Bool("print-queries", false, "catat teks SQL ke log")
@@ -126,39 +162,57 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		Port:             v.GetInt("port"),
 		InitSQLFile:      v.GetString("init-sql-file"),
 
-		Username:           v.GetString("username"),
-		PasswordEnv:        v.GetString("password-env"),
-		JWTSecretEnv:       v.GetString("jwt-secret-env"),
-		JWTPrivateKeyFile:  v.GetString("jwt-private-key-file"),
-		JWTTTL:             v.GetDuration("jwt-ttl"),
-		TLSCert:            v.GetString("tls-cert"),
-		TLSKey:             v.GetString("tls-key"),
-		MTLSCA:             v.GetString("mtls-ca"),
-		TLSSelfSigned:      v.GetBool("tls-self-signed"),
-		PolicyFile:         v.GetString("policy-file"),
-		ClassificationFile: v.GetString("classification-file"),
-		MaskKeyEnv:         v.GetString("mask-hmac-key-env"),
-		OIDCIssuer:         v.GetString("oidc-issuer"),
-		OIDCAudience:       v.GetString("oidc-audience"),
-		OIDCUsernameClaim:  v.GetString("oidc-username-claim"),
-		OIDCGroupsClaim:    v.GetString("oidc-groups-claim"),
-		QueryTimeout:       time.Duration(v.GetInt("query-timeout")) * time.Second,
-		SessionIdleTimeout: v.GetDuration("session-idle-timeout"),
-		MaxConcurrent:      v.GetInt("max-concurrent"),
-		QueueSize:          v.GetInt("queue-size"),
-		QueueTimeout:       v.GetDuration("queue-timeout"),
-		RateLimit:          v.GetFloat64("rate-limit"),
-		RateBurst:          v.GetInt("rate-burst"),
-		SlowQueryThreshold: v.GetDuration("slow-query-threshold"),
-		QueryProfiling:     v.GetBool("query-profiling"),
-		HealthCheckQuery:   v.GetString("health-check-query"),
-		MetricsPort:        v.GetInt("metrics-port"),
-		PrintQueries:       v.GetBool("print-queries"),
-		AuditLogDir:        v.GetString("audit-log-dir"),
-		AuditLogSQL:        v.GetBool("audit-log-sql"),
+		Username:               v.GetString("username"),
+		PasswordEnv:            v.GetString("password-env"),
+		JWTSecretEnv:           v.GetString("jwt-secret-env"),
+		JWTPrivateKeyFile:      v.GetString("jwt-private-key-file"),
+		JWTTTL:                 v.GetDuration("jwt-ttl"),
+		TLSCert:                v.GetString("tls-cert"),
+		TLSKey:                 v.GetString("tls-key"),
+		MTLSCA:                 v.GetString("mtls-ca"),
+		TLSSelfSigned:          v.GetBool("tls-self-signed"),
+		PolicyFile:             v.GetString("policy-file"),
+		ClassificationFile:     v.GetString("classification-file"),
+		MaskKeyEnv:             v.GetString("mask-hmac-key-env"),
+		OIDCIssuer:             v.GetString("oidc-issuer"),
+		OIDCAudience:           v.GetString("oidc-audience"),
+		OIDCUsernameClaim:      v.GetString("oidc-username-claim"),
+		OIDCGroupsClaim:        v.GetString("oidc-groups-claim"),
+		QueryTimeout:           time.Duration(v.GetInt("query-timeout")) * time.Second,
+		SessionIdleTimeout:     v.GetDuration("session-idle-timeout"),
+		MaxConcurrent:          v.GetInt("max-concurrent"),
+		QueueSize:              v.GetInt("queue-size"),
+		QueueTimeout:           v.GetDuration("queue-timeout"),
+		RateLimit:              v.GetFloat64("rate-limit"),
+		RateBurst:              v.GetInt("rate-burst"),
+		SlowQueryThreshold:     v.GetDuration("slow-query-threshold"),
+		QueryProfiling:         v.GetBool("query-profiling"),
+		ArchiveDir:             v.GetString("archive-dir"),
+		ArchiveS3Endpoint:      v.GetString("archive-s3-endpoint"),
+		ArchiveS3Bucket:        v.GetString("archive-s3-bucket"),
+		ArchiveS3Region:        v.GetString("archive-s3-region"),
+		ArchiveS3AccessKeyEnv:  v.GetString("archive-s3-access-key-env"),
+		ArchiveS3SecretKeyEnv:  v.GetString("archive-s3-secret-key-env"),
+		ArchiveS3Insecure:      v.GetBool("archive-s3-insecure"),
+		ArchiveRetention:       v.GetDuration("archive-retention"),
+		AccessLogFlushInterval: v.GetDuration("access-log-flush-interval"),
+		AllowedDirectories:     v.GetStringSlice("allowed-directories"),
+		FourEyes:               v.GetBool("four-eyes"),
+		ReportsFile:            v.GetString("reports-file"),
+		ReportSigningKeyFile:   v.GetString("report-signing-key-file"),
+		StateDir:               v.GetString("state-dir"),
+		DuckDBSecretsFile:      v.GetString("duckdb-secrets-file"),
+		HealthCheckQuery:       v.GetString("health-check-query"),
+		MetricsPort:            v.GetInt("metrics-port"),
+		PrintQueries:           v.GetBool("print-queries"),
+		AuditLogDir:            v.GetString("audit-log-dir"),
+		AuditLogSQL:            v.GetBool("audit-log-sql"),
 	}
 	if err := c.LogLevel.UnmarshalText([]byte(v.GetString("log-level"))); err != nil {
 		return Config{}, fmt.Errorf("config.Load: log-level: %w", err)
+	}
+	if c.StateDir == "" && c.DatabaseFilename != "" {
+		c.StateDir = filepath.Join(filepath.Dir(c.DatabaseFilename), "karhutlasql-state")
 	}
 	if err := c.validate(); err != nil {
 		return Config{}, fmt.Errorf("config.Load: %w", err)
@@ -194,6 +248,18 @@ func (c Config) validate() error {
 	}
 	if c.MaxConcurrent < 0 || c.QueueSize < 0 || c.QueueTimeout < 0 || c.RateLimit < 0 || c.RateBurst < 1 || c.SlowQueryThreshold < 0 {
 		errs = append(errs, errors.New("max-concurrent, queue-size, queue-timeout, rate-limit, slow-query-threshold must be >= 0 and rate-burst >= 1"))
+	}
+	if c.ArchiveDir != "" && c.ArchiveS3Endpoint != "" {
+		errs = append(errs, errors.New("archive-dir and archive-s3-endpoint are mutually exclusive"))
+	}
+	if (c.ArchiveS3Endpoint == "") != (c.ArchiveS3Bucket == "") {
+		errs = append(errs, errors.New("archive-s3-endpoint and archive-s3-bucket must be set together"))
+	}
+	if c.ArchiveRetention <= 0 || c.AccessLogFlushInterval <= 0 {
+		errs = append(errs, errors.New("archive-retention and access-log-flush-interval must be > 0"))
+	}
+	if c.FourEyes && c.StateDir == "" && (c.PolicyFile != "" || c.ClassificationFile != "") {
+		errs = append(errs, errors.New("four-eyes with an in-memory database requires --state-dir (approvals must survive restart)"))
 	}
 	if c.SessionIdleTimeout <= 0 {
 		errs = append(errs, errors.New("session-idle-timeout must be > 0"))

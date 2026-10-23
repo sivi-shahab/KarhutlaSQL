@@ -75,3 +75,59 @@ WHERE duration_ms > 1000 ORDER BY started_at DESC;
 
 Load test: `KARHUTLASQL_PASSWORD=... python tests/load/load.py --clients 50
 --duration 60 --query "..."` (latensi p50/p95/p99 + error per pesan).
+
+## Access history per kolom (G-05)
+
+Setiap statement yang dieksekusi dicatat per kolom yang dibaca: tabel,
+kolom, tag klasifikasi, policy yang diterapkan (`partial`, `hash_hmac`, …,
+`unmasked` untuk kolom bertag yang dibuka), row filter, user, status, jumlah
+baris, SHA-256 SQL asli & hasil rewrite (teks SQL hanya dengan
+`--audit-log-sql`). Statement tulis menambah satu record `action = write` per
+objek target. Report run (`kind = report`) ikut tercatat.
+
+Arsip: `--archive-s3-endpoint/--archive-s3-bucket` (bucket **wajib**
+object-lock; server menolak start tanpa itu) dengan kredensial dari env
+`KARHUTLASQL_ARCHIVE_ACCESS_KEY`/`_SECRET_KEY`, atau `--archive-dir` (dev,
+bukan WORM). Tiap `--access-log-flush-interval` (30s) satu objek Parquet per
+hari UTC: `access/dt=YYYY-MM-DD/<waktu>-<instance>-<seq>.parquet` + manifest
+`.manifest.json` (sha256 objek, jumlah baris, hash manifest sebelumnya —
+rantai hash per instance), dikunci COMPLIANCE selama `--archive-retention`
+(default 10 tahun). Bila arsip gagal terlalu lama (buffer 100.000 record
+penuh) statement baru ditolak `UNAVAILABLE` (fail-closed).
+
+```sql
+SELECT ts, user, column_name, tag, policy, row_filter
+FROM karhutla_access_history()                                  -- 7 hari terakhir
+WHERE table_name = 'warehouse.main.nasabah' AND column_name = 'nik';
+SELECT * FROM karhutla_access_history_range(DATE '2026-10-01', DATE '2026-10-31');  -- UTC, inklusif
+```
+
+Admin melihat semua; user lain hanya miliknya. Export DSAR (admin, NDJSON,
+tercatat di audit `access_history_export`):
+`GET /admin/access-history?since=2026-10-01&until=2026-10-31&table=warehouse.main.nasabah&column=nik`.
+
+Kolom dihitung dari plan logis teroptimasi DuckDB (`json_serialize_plan`):
+kolom filter ikut, kolom yang tidak dibaca tidak. Statement ber-parameter
+memakai plan fisik (kolom filter yang di-pushdown ke scan bisa terlewat).
+Access history mencatat kolom, bukan baris: "siapa membaca NIK nasabah X"
+dijawab lewat tabel/kolom + waktu + row filter, bukan per subjek data.
+
+## Admin lewat Flight DoAction (G-12)
+
+Body & hasil JSON; semua butuh role admin kecuali `health`:
+
+| Action | Body |
+|---|---|
+| `health` | — |
+| `list_sessions` | — |
+| `kill_session` | `{"session_id": "…"}` |
+| `policy_status` | — |
+| `reload_policy` | `{"document": "policy" \| "classification"}` |
+| `approve_policy` | `{"document": "…", "hash": "…"}` |
+
+```python
+import json, pyarrow.flight as fl
+c = fl.FlightClient("grpc+tls://host:31337")
+opts = fl.FlightCallOptions(headers=[c.authenticate_basic_token("admin", pw)])
+print(json.loads(next(c.do_action(fl.Action("list_sessions", b""), opts)).body.to_pybytes()))
+```

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -30,6 +31,9 @@ type Engine interface {
 	DeserializeSQL(ctx context.Context, ast string) (string, error)
 	// Columns kolom tabel (nama, tipe SQL engine) urut posisi.
 	Columns(ctx context.Context, catalog, schema, table string) ([]Column, error)
+	// Snapshot membuka satu transaksi: semua Query di dalamnya melihat data
+	// yang sama (report run, G-10). Pemanggil wajib Close.
+	Snapshot(ctx context.Context) (Snapshot, error)
 
 	// Catalogs: (catalog_name).
 	Catalogs(ctx context.Context) (array.RecordReader, error)
@@ -42,6 +46,13 @@ type Engine interface {
 	// TableSchema mengembalikan schema Arrow sebuah tabel/view.
 	TableSchema(ctx context.Context, catalog, schema, table string) (*arrow.Schema, error)
 
+	Close() error
+}
+
+// Snapshot transaksi baca. Query berurutan (reader sebelumnya harus dilepas).
+type Snapshot interface {
+	Query(ctx context.Context, sql string, args ...any) (array.RecordReader, error)
+	// Close mengakhiri transaksi (rollback: snapshot tidak menulis).
 	Close() error
 }
 
@@ -74,6 +85,10 @@ type Analysis struct {
 	// Scans setiap scan tabel di plan logis pra-optimasi beserta ekspresi
 	// FILTER induk langsungnya ("" bila induk bukan FILTER).
 	Scans []Scan
+	// Columns kolom yang dibaca per tabel ("catalog.schema.table" → nama
+	// kolom huruf kecil) menurut plan fisik tanpa pushdown filter: kolom
+	// filter ikut terhitung. Tabel yang dibaca tanpa kolom (count(*)) tidak ada.
+	Columns map[string][]string
 }
 
 // Scan satu scan tabel di plan.
@@ -94,6 +109,10 @@ type TableFilter struct {
 	TablePattern  *string
 	TableTypes    []string
 }
+
+// ErrPermission engine menolak akses (mis. file/URL di luar allowed
+// directories, G-07).
+var ErrPermission = errors.New("engine permission error")
 
 // Stats statistik eksekusi dari profiling engine (G-09).
 type Stats struct {

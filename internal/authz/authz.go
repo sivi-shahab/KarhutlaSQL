@@ -18,6 +18,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/bankmega/karhutlasql/internal/auth"
+	"github.com/bankmega/karhutlasql/internal/scheduler"
 )
 
 // Action izin per catalog.
@@ -59,6 +60,8 @@ type Policy struct {
 	Allow    Allowlist       `yaml:"allow"`
 	Roles    map[string]Role `yaml:"roles"`
 	Subjects []Subject       `yaml:"subjects"`
+	// ResourceGroups kelas beban (G-08); grup "default" (dari flag) boleh di-override.
+	ResourceGroups map[string]scheduler.Group `yaml:"resource_groups"`
 }
 
 // Allowlist identitas OIDC yang boleh masuk (E-02); identitas lokal tidak
@@ -85,6 +88,8 @@ type Role struct {
 	MaxRows    int64         `yaml:"max_rows"`
 	MaxBytes   int64         `yaml:"max_bytes"`
 	Timeout    time.Duration `yaml:"timeout"`
+	// ResourceGroup kelas beban statement role ini (G-08); kosong = default.
+	ResourceGroup string `yaml:"resource_group"`
 }
 
 // placeholder {{claim.<nama>}} di row filter.
@@ -152,7 +157,15 @@ func (p *Policy) validate() error {
 		if r.MaxRows < 0 || r.MaxBytes < 0 || r.Timeout < 0 {
 			errs = append(errs, fmt.Errorf("role %s: limits must be >= 0", name))
 		}
+		if _, ok := p.ResourceGroups[r.ResourceGroup]; !ok && r.ResourceGroup != "" && r.ResourceGroup != scheduler.Default {
+			errs = append(errs, fmt.Errorf("role %s: undefined resource_group %q", name, r.ResourceGroup))
+		}
 		p.Roles[name] = r
+	}
+	for name, g := range p.ResourceGroups {
+		if err := g.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("resource_groups %s: %w", name, err))
+		}
 	}
 	for i, s := range p.Subjects {
 		m := s.Match
@@ -328,6 +341,9 @@ type Limits struct {
 	MaxRows    int64
 	MaxBytes   int64
 	Timeout    time.Duration
+	// Group resource group: milik role pertama (urutan subjects) yang
+	// menyebutnya, selain itu scheduler.Default.
+	Group string
 }
 
 // LimitsFor menggabungkan pembatasan role.
@@ -345,6 +361,12 @@ func (p *Policy) LimitsFor(roles []string) Limits {
 		l.MaxRows = minPos(l.MaxRows, r.MaxRows)
 		l.MaxBytes = minPos(l.MaxBytes, r.MaxBytes)
 		l.Timeout = time.Duration(minPos(int64(l.Timeout), int64(r.Timeout)))
+		if l.Group == "" {
+			l.Group = r.ResourceGroup
+		}
+	}
+	if l.Group == "" {
+		l.Group = scheduler.Default
 	}
 	return l
 }

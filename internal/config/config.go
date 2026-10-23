@@ -42,11 +42,19 @@ type Config struct {
 
 	QueryTimeout       time.Duration
 	SessionIdleTimeout time.Duration
-	HealthCheckQuery   string
-	MetricsPort        int // 0 = HTTP admin mati
-	PrintQueries       bool
-	AuditLogDir        string // kosong = stdout
-	AuditLogSQL        bool
+
+	MaxConcurrent, QueueSize int
+	QueueTimeout             time.Duration
+	RateLimit                float64 // request/detik per user; 0 = mati
+	RateBurst                int
+	SlowQueryThreshold       time.Duration
+	QueryProfiling           bool
+
+	HealthCheckQuery string
+	MetricsPort      int // 0 = HTTP admin mati
+	PrintQueries     bool
+	AuditLogDir      string // kosong = stdout
+	AuditLogSQL      bool
 }
 
 // Addr host:port listener.
@@ -81,6 +89,13 @@ func RegisterFlags(fs *pflag.FlagSet) {
 
 	fs.Int("query-timeout", 0, "batas eksekusi statement dalam detik; 0 = tanpa batas")
 	fs.Duration("session-idle-timeout", time.Hour, "sesi tanpa aktivitas dibuang dari registry (statement/prepared handle-nya ikut hilang)")
+	fs.Int("max-concurrent", 8, "statement berjalan bersamaan di resource group default; 0 = tanpa batas")
+	fs.Int("queue-size", 64, "statement yang boleh antre di resource group default; penuh → RESOURCE_EXHAUSTED")
+	fs.Duration("queue-timeout", time.Minute, "batas menunggu slot di resource group default; 0 = tanpa batas")
+	fs.Float64("rate-limit", 0, "request RPC per detik per user (token bucket); 0 = mati")
+	fs.Int("rate-burst", 20, "burst token bucket rate limit")
+	fs.Duration("slow-query-threshold", 10*time.Second, "eksekusi (di luar antre) selama ini dicatat ke log slow_query; 0 = mati")
+	fs.Bool("query-profiling", true, "profiling DuckDB per statement untuk peak memory & plan hash di karhutla_query_history() (+~1-5 ms/statement)")
 	fs.String("health-check-query", "SELECT 1", "query untuk gRPC health dan /healthz")
 	fs.Int("metrics-port", 9090, "port HTTP admin (/healthz); 0 = mati")
 	fs.Bool("print-queries", false, "catat teks SQL ke log")
@@ -129,6 +144,13 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		OIDCGroupsClaim:    v.GetString("oidc-groups-claim"),
 		QueryTimeout:       time.Duration(v.GetInt("query-timeout")) * time.Second,
 		SessionIdleTimeout: v.GetDuration("session-idle-timeout"),
+		MaxConcurrent:      v.GetInt("max-concurrent"),
+		QueueSize:          v.GetInt("queue-size"),
+		QueueTimeout:       v.GetDuration("queue-timeout"),
+		RateLimit:          v.GetFloat64("rate-limit"),
+		RateBurst:          v.GetInt("rate-burst"),
+		SlowQueryThreshold: v.GetDuration("slow-query-threshold"),
+		QueryProfiling:     v.GetBool("query-profiling"),
 		HealthCheckQuery:   v.GetString("health-check-query"),
 		MetricsPort:        v.GetInt("metrics-port"),
 		PrintQueries:       v.GetBool("print-queries"),
@@ -169,6 +191,9 @@ func (c Config) validate() error {
 	}
 	if c.MTLSCA != "" && c.TLSCert == "" {
 		errs = append(errs, errors.New("mtls-ca requires tls-cert and tls-key"))
+	}
+	if c.MaxConcurrent < 0 || c.QueueSize < 0 || c.QueueTimeout < 0 || c.RateLimit < 0 || c.RateBurst < 1 || c.SlowQueryThreshold < 0 {
+		errs = append(errs, errors.New("max-concurrent, queue-size, queue-timeout, rate-limit, slow-query-threshold must be >= 0 and rate-burst >= 1"))
 	}
 	if c.SessionIdleTimeout <= 0 {
 		errs = append(errs, errors.New("session-idle-timeout must be > 0"))

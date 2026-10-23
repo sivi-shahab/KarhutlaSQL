@@ -25,6 +25,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/metrics"
+	"github.com/bankmega/karhutlasql/internal/scheduler"
 	"github.com/bankmega/karhutlasql/internal/session"
 	"github.com/bankmega/karhutlasql/internal/sqlext"
 	"github.com/bankmega/karhutlasql/internal/version"
@@ -44,6 +45,17 @@ type Options struct {
 	Policy       *authz.Store     // wajib
 	// Classification tag kolom & mask (G-03); nil = tanpa mask.
 	Classification *classification.Store
+	// Scheduler antrean statement per resource group (G-08); nil = baru.
+	Scheduler *scheduler.Scheduler
+	// DefaultGroup batas grup scheduler.Default bila policy tidak mendefinisikannya.
+	DefaultGroup scheduler.Group
+	// History riwayat statement (G-09); nil = tidak dicatat.
+	History *session.History
+	// Profiling isi peak memory & plan hash history dari profiling DuckDB
+	// (+~1–5 ms per statement, ADR 26).
+	Profiling bool
+	// SlowQuery durasi eksekusi (di luar antre) yang dicatat ke log slow_query; 0 = mati.
+	SlowQuery time.Duration
 }
 
 // Server mengimplementasikan flightsql.Server di atas engine.Engine.
@@ -72,6 +84,9 @@ func New(eng engine.Engine, log *slog.Logger, opts Options) (*Server, error) {
 	}
 	if opts.Classification == nil {
 		opts.Classification, _ = classification.Load("") // path kosong: tidak pernah error
+	}
+	if opts.Scheduler == nil {
+		opts.Scheduler = scheduler.New()
 	}
 	s := &Server{eng: eng, log: log, opts: opts}
 	s.Alloc = memory.DefaultAllocator
@@ -245,9 +260,10 @@ func (s *Server) DoPutPreparedStatementUpdate(ctx context.Context, cmd fsql.Prep
 // --- eksekusi + audit ---
 
 // begin mencatat statement_start, mendaftarkan statement di sesi (kill
-// membatalkannya), menegakkan policy (gagal → statement_end + error), dan
-// mengembalikan ctx eksekusi (timeout server/role, nonce mask), plan (SQL
-// yang dieksekusi) serta end yang wajib dipanggil tepat sekali bila err nil.
+// membatalkannya), menegakkan policy (gagal → statement_end + error), menunggu
+// slot resource group, dan mengembalikan ctx eksekusi (timeout
+// server/role/grup, nonce mask, sink statistik), plan (SQL yang dieksekusi)
+// serta end yang wajib dipanggil tepat sekali bila err nil.
 func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, plan, func(rows, bytes int64, err error), error) {
 	ss, err := sess(ctx)
 	if err != nil {
@@ -264,10 +280,14 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 	}
 
 	qctx, done := ss.Begin(ctx, sql)
-	cancel := context.CancelFunc(func() {})
+	cancel, release := context.CancelFunc(func() {}), func() {}
 	t0 := time.Now()
+	hq := session.Query{RequestID: audit.RequestID(ctx), SessionID: ss.ID, User: id.Subject, Kind: kind, SQL: s.opts.Audit.Redact(sql), StartedAt: t0}
+	var st engine.Stats
+	var tExec time.Time
 	end := func(rows, bytes int64, err error) {
 		cancel()
+		release()
 		done()
 		ss.Rows.Add(rows)
 		ss.Bytes.Add(bytes)
@@ -286,15 +306,52 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 		if kind == "query" {
 			s.opts.Metrics.Sent(id.Subject, rows, bytes)
 		}
+		hq.Status, hq.Error, hq.Rows, hq.Bytes, hq.PeakMemory, hq.PlanHash = fin.Status, fin.Error, rows, bytes, st.PeakMemory, st.PlanHash
+		if !tExec.IsZero() {
+			hq.Duration = time.Since(tExec)
+		}
+		s.opts.History.Add(hq)
+		if s.opts.SlowQuery > 0 && hq.Duration >= s.opts.SlowQuery {
+			s.log.Warn("slow_query", "request_id", hq.RequestID, "session_id", hq.SessionID, "user", hq.User, "resource_group", hq.Group,
+				"status", hq.Status, "queue_ms", hq.QueueWait.Milliseconds(), "duration_ms", hq.Duration.Milliseconds(),
+				"rows", rows, "bytes", bytes, "peak_memory", st.PeakMemory, "plan_hash", st.PlanHash, "sql", hq.SQL)
+		}
 	}
 	pl, err := s.authorize(qctx, sql)
 	if err != nil {
 		end(0, 0, err)
 		return nil, plan{}, nil, err
 	}
+	hq.Group = pl.limits.Group
+	g, ok := s.opts.Policy.Policy().ResourceGroups[pl.limits.Group]
+	if !ok {
+		g = s.opts.DefaultGroup
+	}
+	rel, wait, err := func() (func(), time.Duration, error) {
+		if pl.control {
+			return func() {}, 0, nil
+		}
+		return s.opts.Scheduler.Acquire(qctx, pl.limits.Group, g)
+	}()
+	hq.QueueWait = wait
+	if !pl.control {
+		s.opts.Metrics.QueueWait(pl.limits.Group, wait)
+	}
+	if err != nil {
+		if errors.Is(err, scheduler.ErrQueueFull) || errors.Is(err, scheduler.ErrQueueTimeout) {
+			err = status.Error(codes.ResourceExhausted, err.Error())
+		} else {
+			err = toStatus(qctx, err)
+		}
+		end(0, 0, err)
+		return nil, plan{}, nil, err
+	}
+	release, tExec = rel, time.Now()
 	timeout := s.opts.QueryTimeout
-	if t := pl.limits.Timeout; t > 0 && (timeout == 0 || t < timeout) {
-		timeout = t
+	for _, t := range []time.Duration{pl.limits.Timeout, g.Timeout} {
+		if t > 0 && (timeout == 0 || t < timeout) {
+			timeout = t
+		}
 	}
 	if timeout > 0 {
 		tctx, tcancel := context.WithTimeout(qctx, timeout)
@@ -302,6 +359,9 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 	}
 	if pl.nonce != "" {
 		qctx = sqlext.WithMaskNonce(qctx, pl.nonce)
+	}
+	if s.opts.Profiling {
+		qctx = engine.WithStats(qctx, &st)
 	}
 	return qctx, pl, end, nil
 }

@@ -35,11 +35,15 @@ import (
 	"github.com/bankmega/karhutlasql/internal/flightsql"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
 	"github.com/bankmega/karhutlasql/internal/metrics"
+	"github.com/bankmega/karhutlasql/internal/scheduler"
 	"github.com/bankmega/karhutlasql/internal/server"
 	"github.com/bankmega/karhutlasql/internal/session"
 	"github.com/bankmega/karhutlasql/internal/sqlext"
 	"github.com/bankmega/karhutlasql/internal/version"
 )
+
+// queryHistorySize jumlah statement terakhir di karhutla_query_history().
+const queryHistorySize = 10000
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -130,23 +134,30 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	}
 
 	sessions := session.NewRegistry(cfg.SessionIdleTimeout)
-	m := metrics.New(sessions.Counts)
+	sched := scheduler.New()
+	history := session.NewHistory(queryHistorySize)
+	m := metrics.New(sessions.Counts, sched.Stats)
 	eng, err := duckdb.Open(ctx, duckdb.Config{Path: cfg.DatabaseFilename, InitSQL: initSQL,
 		Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, MaskKey: maskKey})
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, MaskKey: maskKey})
 		}})
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, eng.Close()) }()
 
-	srv, err := flightsql.New(eng, log, flightsql.Options{QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m, Policy: policy, Classification: cls})
+	srv, err := flightsql.New(eng, log, flightsql.Options{
+		QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m, Policy: policy, Classification: cls,
+		Scheduler: sched, DefaultGroup: scheduler.Group{MaxConcurrent: cfg.MaxConcurrent, QueueSize: cfg.QueueSize, QueueTimeout: cfg.QueueTimeout},
+		History: history, SlowQuery: cfg.SlowQueryThreshold, Profiling: cfg.QueryProfiling,
+	})
 	if err != nil {
 		return err
 	}
 	health := healthCheck(eng, cfg.HealthCheckQuery)
 	ai := interceptor.NewAuth(interceptor.AuthOptions{Local: authn, OIDC: oidcVerifier, Policy: policy, Audit: auditLog, Metrics: m, Log: log})
 	si := interceptor.NewSession(sessions, auditLog, m)
+	rl := interceptor.NewRateLimit(cfg.RateLimit, cfg.RateBurst, m)
 
 	lc := &net.ListenConfig{}
 	lis, err := lc.Listen(ctx, "tcp", cfg.Addr())
@@ -167,15 +178,16 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}
 	}
 
-	log.Info("starting", "version", version.Version, "database", cfg.DatabaseFilename, "query_timeout", cfg.QueryTimeout.String())
+	log.Info("starting", "version", version.Version, "database", cfg.DatabaseFilename, "query_timeout", cfg.QueryTimeout.String(),
+		"max_concurrent", cfg.MaxConcurrent, "queue_size", cfg.QueueSize, "rate_limit", cfg.RateLimit)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errc := make(chan error, 2)
 	go func() {
 		errc <- server.Serve(ctx, lis, srv, server.Options{
 			TLS:    tlsCfg,
-			Unary:  []grpc.UnaryServerInterceptor{ai.Unary(), si.Unary()},
-			Stream: []grpc.StreamServerInterceptor{ai.Stream(), si.Stream()},
+			Unary:  []grpc.UnaryServerInterceptor{ai.Unary(), rl.Unary(), si.Unary()},
+			Stream: []grpc.StreamServerInterceptor{ai.Stream(), rl.Stream(), si.Stream()},
 			Health: health,
 			Drain:  server.DrainTimeout,
 		}, log)

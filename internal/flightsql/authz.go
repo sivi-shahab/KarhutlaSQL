@@ -24,7 +24,7 @@ import (
 
 // safeFunctions table function yang tidak membaca data di luar catalog dan
 // boleh dipakai tanpa izin admin. karhutla_* menegakkan izinnya sendiri.
-var safeFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST", "KARHUTLA_SESSIONS", "KARHUTLA_METRICS", "KARHUTLA_KILL_SESSION"}
+var safeFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST", "KARHUTLA_SESSIONS", "KARHUTLA_METRICS", "KARHUTLA_KILL_SESSION", "KARHUTLA_QUERY_HISTORY"}
 
 // writeKinds statement yang target tulisnya ditentukan sqlrewrite.
 var writeKinds = []string{"INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"}
@@ -34,6 +34,11 @@ type plan struct {
 	sql    string // SQL asli, atau hasil rewrite masking/RLS/LIMIT
 	nonce  string // nonce rewrite (ctx karhutla_mask_hmac); "" bila tidak ada
 	limits authz.Limits
+	// control statement admin yang hanya memakai fungsi karhutla_* tanpa
+	// tabel: tidak antre di resource group (kill/monitoring tetap jalan saat
+	// antrean penuh). Hanya admin: fungsi skalar berat tidak terlihat di
+	// Analysis.Functions.
+	control bool
 }
 
 func names(a engine.Analysis) sqlrewrite.Names {
@@ -75,6 +80,18 @@ func needs(a engine.Analysis, sql string) ([]authz.Need, error) {
 	return out, nil
 }
 
+func control(a engine.Analysis) bool {
+	if (a.Kind != "SELECT" && a.Kind != "CALL") || len(a.Tables) > 0 || len(a.Functions) == 0 {
+		return false
+	}
+	for _, f := range a.Functions {
+		if !strings.HasPrefix(f, "KARHUTLA_") {
+			return false
+		}
+	}
+	return true
+}
+
 // deny mencatat authz_deny dan mengembalikan PERMISSION_DENIED.
 func (s *Server) deny(ctx context.Context, kind, sql string, err error) error {
 	id, _ := auth.FromContext(ctx)
@@ -97,7 +114,7 @@ func (s *Server) authorize(ctx context.Context, sql string) (plan, error) {
 		return plan{}, toStatus(ctx, err)
 	}
 	p := s.opts.Policy.Policy()
-	pl := plan{sql: sql, limits: p.LimitsFor(id.Roles)}
+	pl := plan{sql: sql, limits: p.LimitsFor(id.Roles), control: id.HasRole(auth.RoleAdmin) && control(a)}
 	if pl.limits.SelectOnly && a.Kind != "SELECT" {
 		return plan{}, s.deny(ctx, a.Kind, sql, errors.New("role is SELECT-only"))
 	}

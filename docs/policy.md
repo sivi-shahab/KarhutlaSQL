@@ -101,3 +101,35 @@ terlindung, lalu plan DuckDB diverifikasi. Konsekuensinya:
 - Membaca tabel ter-govern lewat view ditolak ("bypasses masking/row filter").
 - `PIVOT` top-level dan sintaks yang tidak bisa diserialisasi DuckDB ditolak
   dengan pesan "cannot be rewritten for data governance".
+
+## Resource group & antrean (G-08)
+
+Setiap statement (selain query kontrol admin: hanya fungsi `karhutla_*` tanpa
+tabel, mis. `karhutla_sessions()`/`karhutla_kill_session()`) menunggu slot resource
+group-nya setelah lolos authz. Grup `default` diatur flag `--max-concurrent`
+(8), `--queue-size` (64), `--queue-timeout` (1m); grup lain di policy:
+
+```yaml
+resource_groups:
+  batch: { max_concurrent: 2, queue_size: 32, queue_timeout: 10m, timeout: 2h }
+  ai:    { max_concurrent: 2, queue_size: 8,  queue_timeout: 30s, timeout: 60s }
+roles:
+  ai_sandbox: { ..., resource_group: ai }
+```
+
+- Grup dipilih dari role pertama (urutan `subjects`) yang menyebut
+  `resource_group`; tanpa itu → `default` (bisa di-override di
+  `resource_groups.default`). Selector by claim = lewat `subjects` → role.
+- Antrean FIFO; antrean penuh atau lewat `queue_timeout` →
+  `RESOURCE_EXHAUSTED`; kill session saat antre → `CANCELLED`.
+- `timeout` grup = batas eksekusi (di luar waktu antre); efektif
+  min(`--query-timeout`, timeout role, timeout grup).
+- `max_concurrent: 0` = tanpa batas. Memori per grup **tidak** ada:
+  `memory_limit` DuckDB berlaku global (ADR 26).
+- Reload SIGHUP: grup yang berubah memakai semaphore baru; statement yang
+  sedang jalan melepas slot lamanya.
+
+Rate limit per user: `--rate-limit <req/detik>` + `--rate-burst` (token
+bucket, 0 = mati) menghitung setiap RPC — satu query Flight SQL = 2 RPC
+(GetFlightInfo + DoGet). Lewat batas → `RESOURCE_EXHAUSTED`
+("rate limit exceeded").

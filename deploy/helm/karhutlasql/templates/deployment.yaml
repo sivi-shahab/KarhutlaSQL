@@ -48,6 +48,13 @@ spec:
             - --metrics-port=9090
             - --username={{ .Values.auth.username }}
             - --query-timeout={{ .Values.queryTimeout }}
+            - --max-concurrent={{ .Values.scheduler.maxConcurrent }}
+            - --queue-size={{ .Values.scheduler.queueSize }}
+            - --queue-timeout={{ .Values.scheduler.queueTimeout }}
+            - --rate-limit={{ .Values.rateLimit.perUser }}
+            - --rate-burst={{ .Values.rateLimit.burst }}
+            - --slow-query-threshold={{ .Values.slowQueryThreshold }}
+            - --query-profiling={{ .Values.queryProfiling }}
             {{- if .Values.tls.existingSecret }}
             - --tls-cert=/tls/tls.crt
             - --tls-key=/tls/tls.key

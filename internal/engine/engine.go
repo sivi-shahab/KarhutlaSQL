@@ -94,3 +94,27 @@ type TableFilter struct {
 	TablePattern  *string
 	TableTypes    []string
 }
+
+// Stats statistik eksekusi dari profiling engine (G-09).
+type Stats struct {
+	// PeakMemory puncak memori buffer engine selama statement (byte). Buffer
+	// manager dipakai bersama: di bawah konkurensi ikut menghitung statement lain.
+	PeakMemory int64
+	// PlanHash hash bentuk plan fisik (pohon operator); sama untuk query yang
+	// berbeda hanya di literal.
+	PlanHash string
+}
+
+type statsKey struct{}
+
+// WithStats meminta Query/Exec mengisi st setelah statement selesai (Query:
+// saat reader dilepas). Tanpa ini profiling tidak diaktifkan.
+func WithStats(ctx context.Context, st *Stats) context.Context {
+	return context.WithValue(ctx, statsKey{}, st)
+}
+
+// StatsFrom sink statistik di ctx; nil bila tidak diminta.
+func StatsFrom(ctx context.Context) *Stats {
+	st, _ := ctx.Value(statsKey{}).(*Stats)
+	return st
+}

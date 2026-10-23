@@ -1,4 +1,4 @@
-# Policy dev untuk realm Keycloak ini (spec §5.3 + allow E-02 + governance G-02..G-06).
+# Policy dev untuk realm Keycloak ini (spec §5.3 + allow E-02 + governance G-02..G-06, G-08).
 default: deny
 allow:
   domains: [bankmega.com]
@@ -14,6 +14,11 @@ roles:
     max_rows: 500
     max_bytes: 104857600
     timeout: 60s
+    resource_group: ai
+# Kelas beban (G-08); role tanpa resource_group → grup default (flag --max-concurrent dst.).
+resource_groups:
+  batch: { max_concurrent: 2, queue_size: 32, queue_timeout: 10m, timeout: 2h }
+  ai:    { max_concurrent: 2, queue_size: 8, queue_timeout: 30s, timeout: 60s }
 subjects:
   - { match: { claim: groups, equals: data-platform }, roles: [admin] }
   - { match: { claim: groups, equals: analyst }, roles: [analyst] }

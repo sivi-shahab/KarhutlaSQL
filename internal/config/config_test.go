@@ -70,6 +70,8 @@ func TestLoad_Invalid(t *testing.T) {
 		{"mtls without tls", []string{"--mtls-ca", "ca.pem"}},
 		{"self-signed with cert", []string{"--tls-self-signed", "--tls-cert", "c.pem", "--tls-key", "k.pem"}},
 		{"negative timeout", []string{"--query-timeout", "-1"}},
+		{"negative max concurrent", []string{"--max-concurrent", "-1"}},
+		{"zero rate burst", []string{"--rate-limit", "5", "--rate-burst", "0"}},
 		{"metrics port clash", []string{"--metrics-port", "31337"}},
 	}
 	for _, tt := range tests {

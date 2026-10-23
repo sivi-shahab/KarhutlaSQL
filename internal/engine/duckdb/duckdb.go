@@ -89,6 +89,10 @@ func (e *Engine) Query(ctx context.Context, query string, args ...any) (array.Re
 	if err != nil {
 		return nil, fmt.Errorf("duckdb.Query: %w", err)
 	}
+	st := engine.StatsFrom(ctx)
+	if err := enableProfiling(ctx, c, st); err != nil {
+		return nil, errors.Join(fmt.Errorf("duckdb.Query: %w", err), c.Close())
+	}
 	ar, err := duckdbdrv.NewArrowFromConn(c)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("duckdb.Query: %w", err), c.Close())
@@ -97,13 +101,15 @@ func (e *Engine) Query(ctx context.Context, query string, args ...any) (array.Re
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("duckdb.Query: %w", err), c.Close())
 	}
-	return &connReader{RecordReader: rdr, conn: c}, nil
+	return &connReader{RecordReader: rdr, conn: c, st: st}, nil
 }
 
-// connReader menutup koneksi saat reader dilepas terakhir kali.
+// connReader menutup koneksi (setelah mengisi statistik) saat reader dilepas
+// terakhir kali.
 type connReader struct {
 	array.RecordReader
 	conn *duckdbdrv.Conn
+	st   *engine.Stats
 	refs atomic.Int64 // tambahan di atas referensi awal
 }
 
@@ -112,7 +118,7 @@ func (r *connReader) Retain() { r.refs.Add(1); r.RecordReader.Retain() }
 func (r *connReader) Release() {
 	r.RecordReader.Release()
 	if r.refs.Add(-1) < 0 {
-		_ = r.conn.Close()
+		closeConn(context.Background(), r.conn, r.st)
 	}
 }
 
@@ -122,7 +128,11 @@ func (e *Engine) Exec(ctx context.Context, query string, args ...any) (int64, er
 	if err != nil {
 		return 0, fmt.Errorf("duckdb.Exec: %w", err)
 	}
-	defer func() { _ = c.Close() }()
+	st := engine.StatsFrom(ctx)
+	defer closeConn(context.WithoutCancel(ctx), c, st)
+	if err := enableProfiling(ctx, c, st); err != nil {
+		return 0, fmt.Errorf("duckdb.Exec: %w", err)
+	}
 	res, err := c.ExecContext(ctx, query, namedArgs(args))
 	if err != nil {
 		return 0, fmt.Errorf("duckdb.Exec: %w", err)

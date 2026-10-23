@@ -31,6 +31,15 @@ oidc:
   audience: karhutlasql
 
 queryTimeout: 300
+# Resource group default (G-08); grup lain di policy.resource_groups.
+scheduler:
+  maxConcurrent: 8
+  queueSize: 64
+  queueTimeout: 60s
+# Request RPC/detik per user (token bucket); 0 = mati.
+rateLimit: { perUser: 0, burst: 20 }
+slowQueryThreshold: 10s
+queryProfiling: true
 extraArgs: []
 
 persistence:

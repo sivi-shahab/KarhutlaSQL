@@ -15,12 +15,14 @@ client cert). Metric yang sama via SQL: `SELECT * FROM karhutla_metrics()`
 | `karhutla_active_statements` | gauge | — |
 | `karhutla_rows_sent_total` / `karhutla_bytes_sent_total` | counter | user |
 | `karhutla_auth_failures_total` | counter | reason (`missing_credentials`, `malformed_credentials`, `invalid_credentials`, `invalid_token`, `session_revoked`) |
-
-Metric antrean (`karhutla_queue_*`) menyusul di Fase 6.
+| `karhutla_queue_depth` / `karhutla_queue_running` | gauge | group (resource group) |
+| `karhutla_queue_wait_seconds` | histogram | group |
+| `karhutla_rate_limited_total` | counter | user |
 
 Dev stack: `docker compose -f deploy/observability/compose.yaml up -d` →
 Grafana http://localhost:3000, dashboard **KarhutlaSQL** (sesi, statement
-berjalan, durasi p50/p95/p99, query per status/user, baris/byte, auth gagal).
+berjalan, durasi p50/p95/p99, query per status/user, baris/byte, auth gagal,
+antrean & p99 waktu antre per resource group, rate limit).
 Kubernetes: pod beranotasi `prometheus.io/scrape` (scheme https).
 
 ## Sesi
@@ -46,3 +48,30 @@ curl -k -X DELETE -H "Authorization: Bearer $TOKEN" https://host:9090/admin/sess
 ```
 
 Semua kill tercatat di audit sebagai `session_killed` (`target`, `via`).
+
+## Riwayat query & slow-query log (G-09)
+
+```sql
+SELECT request_id, user, resource_group, status, queue_ms, duration_ms, rows,
+       peak_memory_bytes, plan_hash, statement
+FROM karhutla_query_history()      -- admin: semua; user lain: miliknya
+WHERE duration_ms > 1000 ORDER BY started_at DESC;
+```
+
+- 10.000 statement terakhir di memori (hilang saat restart; riwayat panjang
+  ikut access-history Parquet Fase 6b). `statement` mengikuti
+  `--audit-log-sql` (default `sha256:<hex>`), selalu SQL asli (bukan hasil
+  rewrite).
+- `duration_ms` = eksekusi tanpa antre; `queue_ms` = menunggu slot.
+- `peak_memory_bytes` & `plan_hash` dari profiling DuckDB per statement
+  (`enable_profiling = 'no_output'`). Peak memory = puncak buffer manager
+  DuckDB selama statement — dipakai bersama, jadi di bawah konkurensi ikut
+  menghitung statement lain. `plan_hash` = hash pohon operator fisik: query
+  yang hanya beda literal punya hash sama. Biaya ~1–5 ms per statement
+  (satu `SET` per koneksi statement + timer operator); `--query-profiling=false`
+  mematikannya (kedua kolom NULL).
+- Eksekusi ≥ `--slow-query-threshold` (default 10s, 0 = mati) dicatat ke log
+  sebagai `"msg":"slow_query"` dengan field yang sama.
+
+Load test: `KARHUTLASQL_PASSWORD=... python tests/load/load.py --clients 50
+--duration 60 --query "..."` (latensi p50/p95/p99 + error per pesan).

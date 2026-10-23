@@ -133,10 +133,15 @@ roles:
     select_only: true
     max_rows: 500
     timeout: 30s
+    resource_group: ai
   batch:
     catalogs: {}
     max_rows: 10000
     max_bytes: 1048576
+    resource_group: batch
+resource_groups:
+  ai:    { max_concurrent: 2, queue_size: 10, queue_timeout: 5s, timeout: 30s }
+  batch: { max_concurrent: 1 }
 subjects:
   - { match: { user: x }, roles: [analyst, cabang, pusat, ai_sandbox, batch] }
 `
@@ -185,14 +190,26 @@ func TestPolicy_Governance(t *testing.T) {
 
 	// G-06: pembatasan paling ketat.
 	l := p.LimitsFor([]string{"ai_sandbox", "batch", "analyst"})
-	if !l.SelectOnly || l.MaxRows != 500 || l.MaxBytes != 1048576 || l.Timeout.Seconds() != 30 {
+	if !l.SelectOnly || l.MaxRows != 500 || l.MaxBytes != 1048576 || l.Timeout.Seconds() != 30 || l.Group != "ai" {
 		t.Errorf("limits = %+v", l)
+	}
+	// G-08: role pertama yang menyebut grup; tanpa grup → default.
+	if g := p.LimitsFor([]string{"analyst", "batch", "ai_sandbox"}).Group; g != "batch" {
+		t.Errorf("group = %q", g)
+	}
+	if g := p.LimitsFor([]string{"analyst"}).Group; g != "default" {
+		t.Errorf("group = %q", g)
+	}
+	if p.ResourceGroups["ai"].QueueTimeout.Seconds() != 5 {
+		t.Errorf("groups = %+v", p.ResourceGroups)
 	}
 	for _, y := range []string{
 		"default: deny\nroles: { r: { catalogs: { a.b.c.d: [read] } } }",
 		"default: deny\nroles: { r: { row_filters: { t: x } } }",
 		"default: deny\nroles: { r: { row_filters: { a.b.c: '{{user.x}} = 1' } } }",
 		"default: deny\nroles: { r: { max_rows: -1 } }",
+		"default: deny\nroles: { r: { resource_group: nope } }",
+		"default: deny\nresource_groups: { g: { max_concurrent: -1 } }",
 	} {
 		if _, err := Parse([]byte(y)); err == nil {
 			t.Errorf("Parse(%q) accepted", y)

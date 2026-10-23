@@ -53,7 +53,8 @@ def start_server(tmp_path_factory, db, extra_args=(), extra_env=None):
     else:
         proc.kill()
         pytest.fail("server tidak listen dalam 15 detik")
-    yield {"uri": f"grpc://127.0.0.1:{port}", "admin": f"http://127.0.0.1:{admin_port}", "audit_dir": audit_dir, "pid": proc.pid}
+    yield {"uri": f"grpc://127.0.0.1:{port}", "admin": f"http://127.0.0.1:{admin_port}", "audit_dir": audit_dir, "pid": proc.pid,
+           "log": logdir / "server.log"}
     proc.terminate()
     assert proc.wait(timeout=35) == 0, "graceful shutdown harus exit 0"
     log.close()

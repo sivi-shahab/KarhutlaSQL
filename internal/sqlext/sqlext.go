@@ -36,6 +36,7 @@ type Deps struct {
 	Sessions *session.Registry
 	Gatherer prometheus.Gatherer
 	Audit    *audit.Logger
+	History  *session.History
 	// MaskKey kunci HMAC-SHA256 untuk mask hash_hmac (G-03); kosong = fungsi
 	// mask menolak semua pemanggilan.
 	MaskKey []byte
@@ -53,9 +54,10 @@ func WithMaskNonce(ctx context.Context, nonce string) context.Context {
 // karhutla_metrics() pada conn (berlaku untuk seluruh database).
 func Register(_ context.Context, conn *sql.Conn, d Deps) error {
 	fns := map[string]duckdb.RowTableFunction{
-		"karhutla_sessions":     table(sessionCols, nil, d.sessions),
-		"karhutla_kill_session": table(killCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, d.kill),
-		"karhutla_metrics":      table(metricCols, nil, d.metrics),
+		"karhutla_sessions":      table(sessionCols, nil, d.sessions),
+		"karhutla_kill_session":  table(killCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, d.kill),
+		"karhutla_metrics":       table(metricCols, nil, d.metrics),
+		"karhutla_query_history": table(historyCols, nil, d.history),
 	}
 	for name, f := range fns {
 		if err := duckdb.RegisterTableUDF(conn, name, f); err != nil {
@@ -102,6 +104,13 @@ var (
 		{"active_statements", duckdb.TYPE_INTEGER}, {"statement", duckdb.TYPE_VARCHAR},
 		{"statement_started_at", duckdb.TYPE_TIMESTAMP_TZ}, {"rows_sent", duckdb.TYPE_BIGINT},
 		{"bytes_sent", duckdb.TYPE_BIGINT}, {"current", duckdb.TYPE_BOOLEAN},
+	}
+	historyCols = []col{
+		{"request_id", duckdb.TYPE_VARCHAR}, {"session_id", duckdb.TYPE_VARCHAR}, {"user", duckdb.TYPE_VARCHAR},
+		{"kind", duckdb.TYPE_VARCHAR}, {"resource_group", duckdb.TYPE_VARCHAR}, {"statement", duckdb.TYPE_VARCHAR},
+		{"status", duckdb.TYPE_VARCHAR}, {"error", duckdb.TYPE_VARCHAR}, {"started_at", duckdb.TYPE_TIMESTAMP_TZ},
+		{"queue_ms", duckdb.TYPE_BIGINT}, {"duration_ms", duckdb.TYPE_BIGINT}, {"rows", duckdb.TYPE_BIGINT},
+		{"bytes", duckdb.TYPE_BIGINT}, {"peak_memory_bytes", duckdb.TYPE_BIGINT}, {"plan_hash", duckdb.TYPE_VARCHAR},
 	}
 	killCols   = []col{{"session_id", duckdb.TYPE_VARCHAR}, {"killed", duckdb.TYPE_BOOLEAN}}
 	metricCols = []col{{"name", duckdb.TYPE_VARCHAR}, {"labels", duckdb.TYPE_VARCHAR}, {"type", duckdb.TYPE_VARCHAR}, {"value", duckdb.TYPE_DOUBLE}}
@@ -201,6 +210,32 @@ func (d Deps) sessions(ctx context.Context, _ []any) ([][]any, error) {
 		}
 		out = append(out, []any{s.ID, s.User, s.Source, s.Peer, ts(s.StartedAt), ts(s.LastActive),
 			int32(min(s.ActiveStatements, math.MaxInt32)), stmt, ts(s.SQLStartedAt), s.Rows, s.Bytes, s.ID == id.TokenID}) //nolint:gosec // dibatasi min
+	}
+	return out, nil
+}
+
+// history: statement terakhir (G-09), tertua dulu; admin melihat semua,
+// user lain hanya miliknya. Teks SQL sudah disamarkan saat dicatat.
+func (d Deps) history(ctx context.Context, _ []any) ([][]any, error) {
+	id, err := identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out [][]any
+	for _, q := range d.History.Snapshot() {
+		if !id.HasRole(auth.RoleAdmin) && q.User != id.Subject {
+			continue
+		}
+		var e any
+		if q.Error != "" {
+			e = q.Error
+		}
+		var plan any
+		if q.PlanHash != "" {
+			plan = q.PlanHash
+		}
+		out = append(out, []any{q.RequestID, q.SessionID, q.User, q.Kind, q.Group, q.SQL, q.Status, e, ts(q.StartedAt),
+			q.QueueWait.Milliseconds(), q.Duration.Milliseconds(), q.Rows, q.Bytes, q.PeakMemory, plan})
 	}
 	return out, nil
 }

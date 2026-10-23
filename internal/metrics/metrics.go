@@ -7,6 +7,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+
+	"github.com/bankmega/karhutlasql/internal/scheduler"
 )
 
 // Metrics collector server. Method aman dipanggil pada nil (tanpa metrics).
@@ -18,15 +20,20 @@ type Metrics struct {
 	rows      *prometheus.CounterVec
 	bytes     *prometheus.CounterVec
 	authFails *prometheus.CounterVec
+	queueWait *prometheus.HistogramVec
+	limited   *prometheus.CounterVec
 }
 
 // Counts sumber gauge sesi: jumlah sesi per source dan statement aktif.
 type Counts func() (bySource map[string]int, statements int)
 
+// Queues sumber gauge antrean per resource group.
+type Queues func() []scheduler.Stat
+
 // New membuat Metrics beserta collector Go/process.
 // ponytail: label user tanpa batas kardinalitas (sesuai spec §9); agregasi
 // atau allowlist bila jumlah user besar.
-func New(counts Counts) *Metrics {
+func New(counts Counts, queues Queues) *Metrics {
 	m := &Metrics{
 		Registry: prometheus.NewRegistry(),
 		queries: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -45,10 +52,17 @@ func New(counts Counts) *Metrics {
 		authFails: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "karhutla_auth_failures_total", Help: "Autentikasi gagal per alasan.",
 		}, []string{"reason"}),
+		queueWait: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "karhutla_queue_wait_seconds", Help: "Lama statement menunggu slot resource group (termasuk yang gagal antre).",
+			Buckets: []float64{.001, .01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 300},
+		}, []string{"group"}),
+		limited: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "karhutla_rate_limited_total", Help: "Request ditolak rate limit per user.",
+		}, []string{"user"}),
 	}
-	m.Registry.MustRegister(m.queries, m.duration, m.rows, m.bytes, m.authFails,
+	m.Registry.MustRegister(m.queries, m.duration, m.rows, m.bytes, m.authFails, m.queueWait, m.limited,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		sessionCollector(counts))
+		sessionCollector(counts), queueCollector(queues))
 	return m
 }
 
@@ -78,6 +92,22 @@ func (m *Metrics) AuthFailure(reason string) {
 	m.authFails.WithLabelValues(reason).Inc()
 }
 
+// QueueWait mencatat lama menunggu slot grup.
+func (m *Metrics) QueueWait(group string, d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.queueWait.WithLabelValues(group).Observe(d.Seconds())
+}
+
+// RateLimited mencatat request yang ditolak rate limit.
+func (m *Metrics) RateLimited(user string) {
+	if m == nil {
+		return
+	}
+	m.limited.WithLabelValues(user).Inc()
+}
+
 var (
 	activeSessions   = prometheus.NewDesc("karhutla_active_sessions", "Sesi di registry per source.", []string{"source"}, nil)
 	activeStatements = prometheus.NewDesc("karhutla_active_statements", "Statement yang sedang berjalan.", nil, nil)
@@ -98,6 +128,30 @@ func (c countsCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- gauge(activeSessions, float64(n), src)
 	}
 	ch <- gauge(activeStatements, float64(stmts))
+}
+
+var (
+	queueDepth   = prometheus.NewDesc("karhutla_queue_depth", "Statement menunggu slot per resource group.", []string{"group"}, nil)
+	queueRunning = prometheus.NewDesc("karhutla_queue_running", "Statement memegang slot per resource group.", []string{"group"}, nil)
+)
+
+type queuesCollector Queues
+
+func queueCollector(q Queues) prometheus.Collector { return queuesCollector(q) }
+
+func (q queuesCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- queueDepth
+	ch <- queueRunning
+}
+
+func (q queuesCollector) Collect(ch chan<- prometheus.Metric) {
+	if q == nil {
+		return
+	}
+	for _, st := range q() {
+		ch <- gauge(queueDepth, float64(st.Waiting), st.Group)
+		ch <- gauge(queueRunning, float64(st.Running), st.Group)
+	}
 }
 
 func gauge(d *prometheus.Desc, v float64, labels ...string) prometheus.Metric {

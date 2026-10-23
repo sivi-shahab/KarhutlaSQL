@@ -209,3 +209,25 @@ func contains(xs []string, s string) bool {
 	}
 	return false
 }
+
+func TestStats(t *testing.T) {
+	e := open(t, "CREATE TABLE t AS SELECT range i FROM range(100000)")
+	run := func(q string) engine.Stats {
+		var st engine.Stats
+		ctx := engine.WithStats(context.Background(), &st)
+		rdr, err := e.Query(ctx, q)
+		rows(t, rdr, err)
+		return st
+	}
+	a, b := run("SELECT i % 7, count(*) FROM t WHERE i > 5 GROUP BY 1"), run("SELECT i % 3, count(*) FROM t WHERE i > 9 GROUP BY 1")
+	if a.PlanHash == "" || a.PlanHash != b.PlanHash || a.PeakMemory <= 0 {
+		t.Errorf("same shape: %+v %+v", a, b)
+	}
+	if c := run("SELECT i FROM t ORDER BY i LIMIT 3"); c.PlanHash == a.PlanHash {
+		t.Errorf("different shape, same hash %s", c.PlanHash)
+	}
+	var st engine.Stats
+	if _, err := e.Exec(engine.WithStats(context.Background(), &st), "INSERT INTO t SELECT * FROM range(10)"); err != nil || st.PlanHash == "" {
+		t.Errorf("exec stats %+v %v", st, err)
+	}
+}

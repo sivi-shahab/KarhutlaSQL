@@ -36,6 +36,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
 	"github.com/bankmega/karhutlasql/internal/metrics"
+	"github.com/bankmega/karhutlasql/internal/scheduler"
 	"github.com/bankmega/karhutlasql/internal/server"
 	"github.com/bankmega/karhutlasql/internal/session"
 	"github.com/bankmega/karhutlasql/internal/sqlext"
@@ -81,6 +82,9 @@ type envOpts struct {
 
 	classification *classification.Store
 	maskKey        []byte
+
+	group     scheduler.Group
+	slowQuery time.Duration
 }
 
 func startServer(t *testing.T, initSQL string) *testEnv {
@@ -94,11 +98,13 @@ func start(t testing.TB, o envOpts) *testEnv {
 	sink := &memSink{}
 	al := audit.New(sink, o.auditSQL, func(err error) { t.Errorf("audit: %v", err) })
 	sessions := session.NewRegistry(time.Hour)
-	m := metrics.New(sessions.Counts)
+	sched := scheduler.New()
+	history := session.NewHistory(1000)
+	m := metrics.New(sessions.Counts, sched.Stats)
 	eng := o.engine
 	if eng == nil {
 		d, err := duckdb.Open(ctx, duckdb.Config{InitSQL: o.initSQL, Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, MaskKey: o.maskKey})
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, History: history, MaskKey: o.maskKey})
 		}})
 		if err != nil {
 			t.Fatal(err)
@@ -121,7 +127,10 @@ func start(t testing.TB, o envOpts) *testEnv {
 	if policy == nil {
 		policy = authz.Static(authz.DevPolicy(testUser))
 	}
-	srv, err := New(eng, log, Options{QueryTimeout: o.queryTimeout, Audit: al, Metrics: m, Policy: policy, Classification: o.classification})
+	srv, err := New(eng, log, Options{
+		QueryTimeout: o.queryTimeout, Audit: al, Metrics: m, Policy: policy, Classification: o.classification,
+		Scheduler: sched, DefaultGroup: o.group, History: history, SlowQuery: o.slowQuery, Profiling: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,7 +15,10 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | github.com/golang-jwt/jwt/v5 | MIT | JWT lokal |
 | github.com/coreos/go-oidc/v3 | Apache-2.0 | OIDC discovery & JWKS |
 | golang.org/x/oauth2 | BSD-3-Clause | Dependensi go-oidc |
-| github.com/prometheus/client_golang | Apache-2.0 | Metrics |
+| github.com/prometheus/client_golang | Apache-2.0 | Metrics (`/metrics`, `karhutla_metrics()`) |
+| github.com/prometheus/client_model, github.com/prometheus/common, github.com/prometheus/procfs | Apache-2.0 | Dependensi client_golang |
+| github.com/beorn7/perks, github.com/cespare/xxhash/v2 | MIT | Dependensi client_golang |
+| github.com/munnerz/goautoneg | BSD-3-Clause | Dependensi client_golang |
 | github.com/spf13/cobra | Apache-2.0 | CLI |
 | github.com/spf13/viper | MIT | Konfigurasi |
 | github.com/spf13/pflag | BSD-3-Clause | Flag (dependensi cobra/viper) |
@@ -41,6 +44,8 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | golang (image builder) | BSD-3-Clause | Build image |
 | busybox (image, init container Helm opsional) | GPL-2.0 (tidak di-link, proses terpisah) | Salin kunci TLS ke emptyDir 0600 |
 | kind | Apache-2.0 | Uji Helm lokal |
+| prom/prometheus (image) | Apache-2.0 | `deploy/observability` (dev) |
+| grafana/grafana (image) | AGPL-3.0 (proses terpisah, tidak di-link/didistribusikan) | `deploy/observability` (dev) |
 | adbc-driver-flightsql (Python) | Apache-2.0 | Integration test |
 | pyarrow | Apache-2.0 | Integration test |
 | flight-sql-jdbc-driver (Java, 19.0.0) | Apache-2.0 | Smoke test JDBC (`tests/jdbc/`, tidak di-vendor) |

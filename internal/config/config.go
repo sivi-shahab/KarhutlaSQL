@@ -35,12 +35,13 @@ type Config struct {
 	TLSCert, TLSKey, MTLSCA string
 	TLSSelfSigned           bool
 
-	QueryTimeout     time.Duration
-	HealthCheckQuery string
-	MetricsPort      int // 0 = HTTP admin mati
-	PrintQueries     bool
-	AuditLogDir      string // kosong = stdout
-	AuditLogSQL      bool
+	QueryTimeout       time.Duration
+	SessionIdleTimeout time.Duration
+	HealthCheckQuery   string
+	MetricsPort        int // 0 = HTTP admin mati
+	PrintQueries       bool
+	AuditLogDir        string // kosong = stdout
+	AuditLogSQL        bool
 }
 
 // Addr host:port listener.
@@ -67,6 +68,7 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.Bool("tls-self-signed", false, "TLS dengan sertifikat self-signed di memori (dev/container; klien --tls-skip-verify)")
 
 	fs.Int("query-timeout", 0, "batas eksekusi statement dalam detik; 0 = tanpa batas")
+	fs.Duration("session-idle-timeout", time.Hour, "sesi tanpa aktivitas dibuang dari registry (statement/prepared handle-nya ikut hilang)")
 	fs.String("health-check-query", "SELECT 1", "query untuk gRPC health dan /healthz")
 	fs.Int("metrics-port", 9090, "port HTTP admin (/healthz); 0 = mati")
 	fs.Bool("print-queries", false, "catat teks SQL ke log")
@@ -97,21 +99,22 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		Port:             v.GetInt("port"),
 		InitSQLFile:      v.GetString("init-sql-file"),
 
-		Username:          v.GetString("username"),
-		PasswordEnv:       v.GetString("password-env"),
-		JWTSecretEnv:      v.GetString("jwt-secret-env"),
-		JWTPrivateKeyFile: v.GetString("jwt-private-key-file"),
-		JWTTTL:            v.GetDuration("jwt-ttl"),
-		TLSCert:           v.GetString("tls-cert"),
-		TLSKey:            v.GetString("tls-key"),
-		MTLSCA:            v.GetString("mtls-ca"),
-		TLSSelfSigned:     v.GetBool("tls-self-signed"),
-		QueryTimeout:      time.Duration(v.GetInt("query-timeout")) * time.Second,
-		HealthCheckQuery:  v.GetString("health-check-query"),
-		MetricsPort:       v.GetInt("metrics-port"),
-		PrintQueries:      v.GetBool("print-queries"),
-		AuditLogDir:       v.GetString("audit-log-dir"),
-		AuditLogSQL:       v.GetBool("audit-log-sql"),
+		Username:           v.GetString("username"),
+		PasswordEnv:        v.GetString("password-env"),
+		JWTSecretEnv:       v.GetString("jwt-secret-env"),
+		JWTPrivateKeyFile:  v.GetString("jwt-private-key-file"),
+		JWTTTL:             v.GetDuration("jwt-ttl"),
+		TLSCert:            v.GetString("tls-cert"),
+		TLSKey:             v.GetString("tls-key"),
+		MTLSCA:             v.GetString("mtls-ca"),
+		TLSSelfSigned:      v.GetBool("tls-self-signed"),
+		QueryTimeout:       time.Duration(v.GetInt("query-timeout")) * time.Second,
+		SessionIdleTimeout: v.GetDuration("session-idle-timeout"),
+		HealthCheckQuery:   v.GetString("health-check-query"),
+		MetricsPort:        v.GetInt("metrics-port"),
+		PrintQueries:       v.GetBool("print-queries"),
+		AuditLogDir:        v.GetString("audit-log-dir"),
+		AuditLogSQL:        v.GetBool("audit-log-sql"),
 	}
 	if err := c.LogLevel.UnmarshalText([]byte(v.GetString("log-level"))); err != nil {
 		return Config{}, fmt.Errorf("config.Load: log-level: %w", err)
@@ -144,6 +147,9 @@ func (c Config) validate() error {
 	}
 	if c.MTLSCA != "" && c.TLSCert == "" {
 		errs = append(errs, errors.New("mtls-ca requires tls-cert and tls-key"))
+	}
+	if c.SessionIdleTimeout <= 0 {
+		errs = append(errs, errors.New("session-idle-timeout must be > 0"))
 	}
 	if c.QueryTimeout < 0 {
 		errs = append(errs, errors.New("query-timeout must be >= 0"))

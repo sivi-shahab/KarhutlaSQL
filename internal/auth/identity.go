@@ -1,6 +1,10 @@
 package auth
 
-import "context"
+import (
+	"context"
+	"slices"
+	"time"
+)
 
 // Sumber identitas.
 const (
@@ -15,9 +19,16 @@ type Identity struct {
 	Groups  []string
 	Roles   []string
 	Source  string
-	// TokenID (jti) untuk revocation di Fase 4.
-	TokenID string
+	// TokenID (jti) = ID sesi; kunci revocation (kill session).
+	TokenID   string
+	ExpiresAt time.Time
 }
+
+// RoleAdmin boleh melihat semua sesi dan kill session.
+const RoleAdmin = "admin"
+
+// HasRole melaporkan apakah id memiliki role.
+func (id Identity) HasRole(role string) bool { return slices.Contains(id.Roles, role) }
 
 type ctxKey struct{}
 

@@ -13,6 +13,10 @@ spec:
   template:
     metadata:
       labels: {{- include "karhutlasql.selectorLabels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/scheme: https # port admin ikut TLS server
     spec:
       securityContext:
         runAsNonRoot: true
@@ -62,10 +66,10 @@ spec:
             - { name: flight, containerPort: 31337 }
             - { name: admin, containerPort: 9090 }
           readinessProbe:
-            httpGet: { path: /healthz, port: admin }
+            httpGet: { path: /healthz, port: admin, scheme: HTTPS }
             periodSeconds: 10
           livenessProbe:
-            httpGet: { path: /healthz, port: admin }
+            httpGet: { path: /healthz, port: admin, scheme: HTTPS }
             initialDelaySeconds: 10
             periodSeconds: 20
             failureThreshold: 6

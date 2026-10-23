@@ -1,0 +1,12 @@
+# Scrape /metrics KarhutlaSQL. Port admin memakai TLS bila server TLS
+# (self-signed di dev → insecure_skip_verify; produksi: ca_file).
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: karhutlasql
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
+    static_configs:
+      - targets: ["server:9090"]

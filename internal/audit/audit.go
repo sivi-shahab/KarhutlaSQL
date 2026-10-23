@@ -11,6 +11,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/bankmega/karhutlasql/internal/auth"
 )
 
 // Tipe event.
@@ -19,6 +21,7 @@ const (
 	LoginFail      = "login_fail"
 	StatementStart = "statement_start"
 	StatementEnd   = "statement_end"
+	SessionKilled  = "session_killed"
 )
 
 // Event satu baris audit (JSON). Field kosong dihilangkan.
@@ -26,6 +29,7 @@ type Event struct {
 	Time       time.Time `json:"ts"`
 	Type       string    `json:"type"`
 	RequestID  string    `json:"request_id,omitempty"`
+	SessionID  string    `json:"session_id,omitempty"`
 	User       string    `json:"user,omitempty"`
 	Source     string    `json:"source,omitempty"`
 	Peer       string    `json:"peer,omitempty"`
@@ -36,6 +40,8 @@ type Event struct {
 	Rows       int64     `json:"rows,omitempty"`
 	DurationMS int64     `json:"duration_ms,omitempty"`
 	Error      string    `json:"error,omitempty"`
+	Target     string    `json:"target,omitempty"` // session_killed: ID sesi yang dimatikan
+	Via        string    `json:"via,omitempty"`    // session_killed: sql | http
 }
 
 // Sink tujuan event audit. Emit harus aman dipanggil konkuren.
@@ -63,9 +69,22 @@ func (l *Logger) Emit(ctx context.Context, e Event) {
 	if e.RequestID == "" {
 		e.RequestID = RequestID(ctx)
 	}
+	if id, ok := auth.FromContext(ctx); ok && e.SessionID == "" {
+		e.SessionID = id.TokenID
+	}
 	if err := l.sink.Emit(e); err != nil && l.onErr != nil {
 		l.onErr(err)
 	}
+}
+
+// Redact mengembalikan sql apa adanya bila --audit-log-sql, selain itu
+// "sha256:<hex>" (dipakai di luar audit, mis. karhutla_sessions()).
+func (l *Logger) Redact(sql string) string {
+	if l.withSQL {
+		return sql
+	}
+	sum := sha256.Sum256([]byte(sql))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // SQL mengisi SQLHash (selalu) dan SQL (jika diizinkan) pada e.

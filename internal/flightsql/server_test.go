@@ -5,6 +5,7 @@ package flightsql
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"io"
 	"log/slog"
 	"net"
@@ -31,7 +32,10 @@ import (
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
+	"github.com/bankmega/karhutlasql/internal/metrics"
 	"github.com/bankmega/karhutlasql/internal/server"
+	"github.com/bankmega/karhutlasql/internal/session"
+	"github.com/bankmega/karhutlasql/internal/sqlext"
 )
 
 const (
@@ -56,6 +60,9 @@ type testEnv struct {
 	audit *memSink
 	clock *atomic.Pointer[time.Time]
 	creds credentials.TransportCredentials
+
+	sessions *session.Registry
+	metrics  *metrics.Metrics
 }
 
 type envOpts struct {
@@ -75,17 +82,21 @@ func startServer(t *testing.T, initSQL string) *testEnv {
 func start(t *testing.T, o envOpts) *testEnv {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sink := &memSink{}
+	al := audit.New(sink, o.auditSQL, func(err error) { t.Errorf("audit: %v", err) })
+	sessions := session.NewRegistry(time.Hour)
+	m := metrics.New(sessions.Counts)
 	eng := o.engine
 	if eng == nil {
-		d, err := duckdb.Open(ctx, duckdb.Config{InitSQL: o.initSQL})
+		d, err := duckdb.Open(ctx, duckdb.Config{InitSQL: o.initSQL, Setup: func(ctx context.Context, conn *sql.Conn) error {
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al})
+		}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		eng = d
 	}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	sink := &memSink{}
-	al := audit.New(sink, o.auditSQL, func(err error) { t.Errorf("audit: %v", err) })
 
 	clock := &atomic.Pointer[time.Time]{}
 	now := time.Now()
@@ -98,7 +109,7 @@ func start(t *testing.T, o envOpts) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := New(eng, log, Options{QueryTimeout: o.queryTimeout, Audit: al})
+	srv, err := New(eng, log, Options{QueryTimeout: o.queryTimeout, Audit: al, Metrics: m})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,11 +117,12 @@ func start(t *testing.T, o envOpts) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ai := interceptor.NewAuth(authn, al, log)
+	ai := interceptor.NewAuth(authn, al, m, log)
+	si := interceptor.NewSession(sessions, al, m)
 	done := make(chan error, 1)
 	go func() {
 		done <- server.Serve(ctx, lis, srv, server.Options{
-			TLS: o.tls, Unary: []grpc.UnaryServerInterceptor{ai.Unary()}, Stream: []grpc.StreamServerInterceptor{ai.Stream()},
+			TLS: o.tls, Unary: []grpc.UnaryServerInterceptor{ai.Unary(), si.Unary()}, Stream: []grpc.StreamServerInterceptor{ai.Stream(), si.Stream()},
 			Health: func(context.Context) error { return nil }, Drain: 5 * time.Second,
 		}, log)
 	}()
@@ -119,7 +131,7 @@ func start(t *testing.T, o envOpts) *testEnv {
 	if creds == nil {
 		creds = insecure.NewCredentials()
 	}
-	env := &testEnv{addr: lis.Addr().String(), audit: sink, clock: clock, creds: creds}
+	env := &testEnv{addr: lis.Addr().String(), audit: sink, clock: clock, creds: creds, sessions: sessions, metrics: m}
 	env.cl = env.dial(t)
 	t.Cleanup(func() {
 		cancel()

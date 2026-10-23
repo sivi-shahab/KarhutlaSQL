@@ -16,6 +16,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/auth/local"
+	"github.com/bankmega/karhutlasql/internal/metrics"
 )
 
 const (
@@ -28,14 +29,15 @@ const (
 // Handshake menerima Basic → menerbitkan Bearer (header & trailer, sesuai
 // klien Flight Go/Java); RPC lain wajib Bearer yang valid.
 type Auth struct {
-	local *local.Authenticator
-	audit *audit.Logger
-	log   *slog.Logger
+	local   *local.Authenticator
+	audit   *audit.Logger
+	metrics *metrics.Metrics
+	log     *slog.Logger
 }
 
-// NewAuth membuat interceptor auth.
-func NewAuth(l *local.Authenticator, a *audit.Logger, log *slog.Logger) *Auth {
-	return &Auth{local: l, audit: a, log: log}
+// NewAuth membuat interceptor auth. m boleh nil.
+func NewAuth(l *local.Authenticator, a *audit.Logger, m *metrics.Metrics, log *slog.Logger) *Auth {
+	return &Auth{local: l, audit: a, metrics: m, log: log}
 }
 
 // Unary interceptor unary.
@@ -101,24 +103,24 @@ func (a *Auth) handshake(ctx context.Context, ss grpc.ServerStream) (context.Con
 		return a.bearer(ctx)
 	}
 	if !strings.EqualFold(scheme, "Basic") || cred == "" {
-		a.fail(ctx, "", "missing basic credentials")
+		a.fail(ctx, "", "missing basic credentials", "missing_credentials")
 		return ctx, status.Error(codes.Unauthenticated, "handshake requires Basic credentials")
 	}
 	raw, err := base64.StdEncoding.DecodeString(cred)
 	if err != nil {
 		if raw, err = base64.RawStdEncoding.DecodeString(cred); err != nil {
-			a.fail(ctx, "", "malformed basic credentials")
+			a.fail(ctx, "", "malformed basic credentials", "malformed_credentials")
 			return ctx, errUnauthenticated
 		}
 	}
 	user, pass, ok := strings.Cut(string(raw), ":")
 	if !ok {
-		a.fail(ctx, "", "malformed basic credentials")
+		a.fail(ctx, "", "malformed basic credentials", "malformed_credentials")
 		return ctx, errUnauthenticated
 	}
 	token, id, err := a.local.Login(user, pass)
 	if err != nil {
-		a.fail(ctx, user, err.Error())
+		a.fail(ctx, user, err.Error(), "invalid_credentials")
 		return ctx, errUnauthenticated
 	}
 	md := metadata.Pairs(authHeader, "Bearer "+token)
@@ -137,15 +139,17 @@ func (a *Auth) bearer(ctx context.Context) (context.Context, error) {
 	}
 	id, err := a.local.Verify(cred)
 	if err != nil {
-		a.fail(ctx, "", "invalid bearer token")
+		a.fail(ctx, "", "invalid bearer token", "invalid_token")
 		a.log.Debug("bearer rejected", "err", err, "request_id", audit.RequestID(ctx))
 		return ctx, status.Error(codes.Unauthenticated, "invalid or expired token")
 	}
 	return auth.WithIdentity(ctx, id), nil
 }
 
-func (a *Auth) fail(ctx context.Context, user, reason string) {
+// fail mencatat login_fail; label = alasan dari himpunan tetap (label metric).
+func (a *Auth) fail(ctx context.Context, user, reason, label string) {
 	a.audit.Emit(ctx, audit.Event{Type: audit.LoginFail, User: user, Peer: peerAddr(ctx), Error: reason})
+	a.metrics.AuthFailure(label)
 }
 
 type ctxStream struct {

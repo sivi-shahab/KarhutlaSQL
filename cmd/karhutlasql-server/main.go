@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/cobra"
@@ -29,7 +31,10 @@ import (
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/flightsql"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
+	"github.com/bankmega/karhutlasql/internal/metrics"
 	"github.com/bankmega/karhutlasql/internal/server"
+	"github.com/bankmega/karhutlasql/internal/session"
+	"github.com/bankmega/karhutlasql/internal/sqlext"
 	"github.com/bankmega/karhutlasql/internal/version"
 )
 
@@ -103,18 +108,24 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}
 		initSQL = string(b)
 	}
-	eng, err := duckdb.Open(ctx, duckdb.Config{Path: cfg.DatabaseFilename, InitSQL: initSQL})
+	sessions := session.NewRegistry(cfg.SessionIdleTimeout)
+	m := metrics.New(sessions.Counts)
+	eng, err := duckdb.Open(ctx, duckdb.Config{Path: cfg.DatabaseFilename, InitSQL: initSQL,
+		Setup: func(ctx context.Context, conn *sql.Conn) error {
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: auditLog})
+		}})
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, eng.Close()) }()
 
-	srv, err := flightsql.New(eng, log, flightsql.Options{QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog})
+	srv, err := flightsql.New(eng, log, flightsql.Options{QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m})
 	if err != nil {
 		return err
 	}
 	health := healthCheck(eng, cfg.HealthCheckQuery)
-	ai := interceptor.NewAuth(authn, auditLog, log)
+	ai := interceptor.NewAuth(authn, auditLog, m, log)
+	si := interceptor.NewSession(sessions, auditLog, m)
 
 	lc := &net.ListenConfig{}
 	lis, err := lc.Listen(ctx, "tcp", cfg.Addr())
@@ -126,6 +137,13 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		if adminLis, err = lc.Listen(ctx, "tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.MetricsPort))); err != nil {
 			return errors.Join(fmt.Errorf("main.serve: %w", err), lis.Close())
 		}
+		// /admin/* membawa Bearer token → TLS bila gRPC TLS; tanpa client cert
+		// agar probe & Prometheus tetap bisa (auth admin = Bearer + role).
+		if tlsCfg != nil {
+			at := tlsCfg.Clone()
+			at.ClientAuth, at.ClientCAs = tls.NoClientCert, nil
+			adminLis = tls.NewListener(adminLis, at)
+		}
 	}
 
 	log.Info("starting", "version", version.Version, "database", cfg.DatabaseFilename, "query_timeout", cfg.QueryTimeout.String())
@@ -135,17 +153,19 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	go func() {
 		errc <- server.Serve(ctx, lis, srv, server.Options{
 			TLS:    tlsCfg,
-			Unary:  []grpc.UnaryServerInterceptor{ai.Unary()},
-			Stream: []grpc.StreamServerInterceptor{ai.Stream()},
+			Unary:  []grpc.UnaryServerInterceptor{ai.Unary(), si.Unary()},
+			Stream: []grpc.StreamServerInterceptor{ai.Stream(), si.Stream()},
 			Health: health,
 			Drain:  server.DrainTimeout,
 		}, log)
 		cancel()
 	}()
+	go sessions.Run(ctx, time.Minute)
 	n := 1
 	if adminLis != nil {
 		n++
-		go func() { errc <- admin.Serve(ctx, adminLis, admin.Handler(health), log); cancel() }()
+		h := admin.Handler(admin.Options{Health: health, Gatherer: m.Registry, Sessions: sessions, Verify: authn.Verify, Audit: auditLog})
+		go func() { errc <- admin.Serve(ctx, adminLis, h, log); cancel() }()
 	}
 	for range n {
 		err = errors.Join(err, <-errc)

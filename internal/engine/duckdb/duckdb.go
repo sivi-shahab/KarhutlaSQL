@@ -5,6 +5,7 @@ package duckdb
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
@@ -24,6 +25,9 @@ type Config struct {
 	Path string
 	// InitSQL dieksekusi sekali saat Open (INSTALL/LOAD extension, ATTACH, ...).
 	InitSQL string
+	// Setup dipanggil sekali saat Open dengan satu koneksi, mis. untuk
+	// mendaftarkan UDF (berlaku di seluruh database). Engine tidak tahu isinya.
+	Setup func(ctx context.Context, conn *sql.Conn) error
 }
 
 // Engine adalah engine.Engine berbasis DuckDB. Setiap statement memakai koneksi
@@ -43,12 +47,29 @@ func Open(ctx context.Context, cfg Config) (*Engine, error) {
 		return nil, fmt.Errorf("duckdb.Open: %w", err)
 	}
 	e := &Engine{connector: c}
+	if cfg.Setup != nil {
+		if err := setup(ctx, c, cfg.Setup); err != nil {
+			return nil, errors.Join(fmt.Errorf("duckdb.Open: setup: %w", err), c.Close())
+		}
+	}
 	if strings.TrimSpace(cfg.InitSQL) != "" {
 		if _, err := e.Exec(ctx, cfg.InitSQL); err != nil {
 			return nil, errors.Join(fmt.Errorf("duckdb.Open: init sql: %w", err), c.Close())
 		}
 	}
 	return e, nil
+}
+
+// noClose menyembunyikan Close connector agar sql.DB.Close tidak menutup database.
+type noClose struct{ driver.Connector }
+
+func setup(ctx context.Context, c *duckdbdrv.Connector, fn func(context.Context, *sql.Conn) error) error {
+	db := sql.OpenDB(noClose{c})
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return errors.Join(err, db.Close())
+	}
+	return errors.Join(fn(ctx, conn), conn.Close(), db.Close())
 }
 
 func (e *Engine) conn(ctx context.Context) (*duckdbdrv.Conn, error) {

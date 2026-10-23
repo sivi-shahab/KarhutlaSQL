@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,11 +22,13 @@ import (
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/engine"
+	"github.com/bankmega/karhutlasql/internal/metrics"
+	"github.com/bankmega/karhutlasql/internal/session"
+	"github.com/bankmega/karhutlasql/internal/sqlext"
 	"github.com/bankmega/karhutlasql/internal/version"
 )
 
 // ticketTTL batas umur statement handle yang belum di-DoGet.
-// ponytail: map global + timer per handle; pindah ke session registry di Fase 4.
 const ticketTTL = 10 * time.Minute
 
 // Options perilaku eksekusi statement.
@@ -35,6 +38,7 @@ type Options struct {
 	// PrintQueries mencatat teks SQL ke log (bukan audit).
 	PrintQueries bool
 	Audit        *audit.Logger
+	Metrics      *metrics.Metrics // nil = tanpa metrics
 }
 
 // Server mengimplementasikan flightsql.Server di atas engine.Engine.
@@ -43,11 +47,10 @@ type Server struct {
 	eng  engine.Engine
 	log  *slog.Logger
 	opts Options
-
-	mu       sync.Mutex
-	stmts    map[string]string // handle → SQL, dikonsumsi DoGet
-	prepared map[string]*prepared
 }
+
+// stmtHandle SQL statement yang menunggu DoGet (disimpan di sesi pemilik).
+type stmtHandle string
 
 type prepared struct {
 	sql  string
@@ -62,7 +65,7 @@ func New(eng engine.Engine, log *slog.Logger, opts Options) (*Server, error) {
 	if opts.Audit == nil {
 		return nil, errors.New("flightsql.New: audit logger is required")
 	}
-	s := &Server{eng: eng, log: log, opts: opts, stmts: map[string]string{}, prepared: map[string]*prepared{}}
+	s := &Server{eng: eng, log: log, opts: opts}
 	s.Alloc = memory.DefaultAllocator
 	for id, v := range map[fsql.SqlInfo]any{
 		fsql.SqlInfoFlightSqlServerName:     "KarhutlaSQL",
@@ -81,15 +84,25 @@ func New(eng engine.Engine, log *slog.Logger, opts Options) (*Server, error) {
 
 // --- statement ---
 
-func (s *Server) GetFlightInfoStatement(_ context.Context, cmd fsql.StatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+// sess sesi pemanggil; tidak ada = interceptor sesi tidak terpasang (fail-closed).
+func sess(ctx context.Context) (*session.Session, error) {
+	if ss := session.FromContext(ctx); ss != nil {
+		return ss, nil
+	}
+	return nil, status.Error(codes.Unauthenticated, "no session")
+}
+
+func (s *Server) GetFlightInfoStatement(ctx context.Context, cmd fsql.StatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
 	if len(cmd.GetTransactionId()) > 0 {
 		return nil, status.Error(codes.Unimplemented, "transactions are not supported")
 	}
+	ss, err := sess(ctx)
+	if err != nil {
+		return nil, err
+	}
 	handle := uuid.NewString()
-	s.mu.Lock()
-	s.stmts[handle] = cmd.GetQuery()
-	s.mu.Unlock()
-	time.AfterFunc(ticketTTL, func() { s.takeStmt(handle) })
+	ss.Put(handle, stmtHandle(cmd.GetQuery()))
+	time.AfterFunc(ticketTTL, func() { ss.Delete(handle) })
 
 	tkt, err := fsql.CreateStatementQueryTicket([]byte(handle))
 	if err != nil {
@@ -98,20 +111,17 @@ func (s *Server) GetFlightInfoStatement(_ context.Context, cmd fsql.StatementQue
 	return flightInfo(desc, tkt), nil
 }
 
-func (s *Server) takeStmt(handle string) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	q, ok := s.stmts[handle]
-	delete(s.stmts, handle)
-	return q, ok
-}
-
 func (s *Server) DoGetStatement(ctx context.Context, tkt fsql.StatementQueryTicket) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	q, ok := s.takeStmt(string(tkt.GetStatementHandle()))
+	ss, err := sess(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	v, _ := ss.Take(string(tkt.GetStatementHandle()))
+	q, ok := v.(stmtHandle)
 	if !ok {
 		return nil, nil, status.Error(codes.NotFound, "unknown or expired statement handle")
 	}
-	return s.query(ctx, q, nil)
+	return s.query(ctx, string(q), nil)
 }
 
 func (s *Server) DoPutCommandStatementUpdate(ctx context.Context, cmd fsql.StatementUpdate) (int64, error) {
@@ -127,38 +137,46 @@ func (s *Server) CreatePreparedStatement(ctx context.Context, req fsql.ActionCre
 	if len(req.GetTransactionId()) > 0 {
 		return fsql.ActionCreatePreparedStatementResult{}, status.Error(codes.Unimplemented, "transactions are not supported")
 	}
+	ss, err := sess(ctx)
+	if err != nil {
+		return fsql.ActionCreatePreparedStatementResult{}, err
+	}
 	info, err := s.eng.Describe(ctx, req.GetQuery())
 	if err != nil {
 		return fsql.ActionCreatePreparedStatementResult{}, toStatus(ctx, err)
 	}
 	handle := uuid.NewString()
-	s.mu.Lock()
-	s.prepared[handle] = &prepared{sql: req.GetQuery(), info: info}
-	s.mu.Unlock()
+	ss.Put(handle, &prepared{sql: req.GetQuery(), info: info})
 	// DatasetSchema wajib bagi driver JDBC: tanpa itu statement dianggap update.
 	isUpdate := !info.ReturnsRows
 	return fsql.ActionCreatePreparedStatementResult{Handle: []byte(handle), DatasetSchema: info.Schema, IsUpdate: &isUpdate}, nil
 }
 
-func (s *Server) ClosePreparedStatement(_ context.Context, req fsql.ActionClosePreparedStatementRequest) error {
-	s.mu.Lock()
-	delete(s.prepared, string(req.GetPreparedStatementHandle()))
-	s.mu.Unlock()
+func (s *Server) ClosePreparedStatement(ctx context.Context, req fsql.ActionClosePreparedStatementRequest) error {
+	ss, err := sess(ctx)
+	if err != nil {
+		return err
+	}
+	ss.Delete(string(req.GetPreparedStatementHandle()))
 	return nil
 }
 
-func (s *Server) getPrepared(handle []byte) (*prepared, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p, ok := s.prepared[string(handle)]
+// getPrepared mengambil prepared statement milik sesi pemanggil.
+func getPrepared(ctx context.Context, handle []byte) (*prepared, error) {
+	ss, err := sess(ctx)
+	if err != nil {
+		return nil, err
+	}
+	v, _ := ss.Get(string(handle))
+	p, ok := v.(*prepared)
 	if !ok {
 		return nil, status.Error(codes.NotFound, "unknown prepared statement handle")
 	}
 	return p, nil
 }
 
-func (s *Server) DoPutPreparedStatementQuery(_ context.Context, cmd fsql.PreparedStatementQuery, rdr flight.MessageReader, _ flight.MetadataWriter) ([]byte, error) {
-	p, err := s.getPrepared(cmd.GetPreparedStatementHandle())
+func (s *Server) DoPutPreparedStatementQuery(ctx context.Context, cmd fsql.PreparedStatementQuery, rdr flight.MessageReader, _ flight.MetadataWriter) ([]byte, error) {
+	p, err := getPrepared(ctx, cmd.GetPreparedStatementHandle())
 	if err != nil {
 		return nil, err
 	}
@@ -178,15 +196,15 @@ func (s *Server) DoPutPreparedStatementQuery(_ context.Context, cmd fsql.Prepare
 	return cmd.GetPreparedStatementHandle(), nil
 }
 
-func (s *Server) GetFlightInfoPreparedStatement(_ context.Context, cmd fsql.PreparedStatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
-	if _, err := s.getPrepared(cmd.GetPreparedStatementHandle()); err != nil {
+func (s *Server) GetFlightInfoPreparedStatement(ctx context.Context, cmd fsql.PreparedStatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	if _, err := getPrepared(ctx, cmd.GetPreparedStatementHandle()); err != nil {
 		return nil, err
 	}
 	return flightInfo(desc, desc.Cmd), nil
 }
 
 func (s *Server) DoGetPreparedStatement(ctx context.Context, cmd fsql.PreparedStatementQuery) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	p, err := s.getPrepared(cmd.GetPreparedStatementHandle())
+	p, err := getPrepared(ctx, cmd.GetPreparedStatementHandle())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -197,7 +215,7 @@ func (s *Server) DoGetPreparedStatement(ctx context.Context, cmd fsql.PreparedSt
 }
 
 func (s *Server) DoPutPreparedStatementUpdate(ctx context.Context, cmd fsql.PreparedStatementUpdate, rdr flight.MessageReader) (int64, error) {
-	p, err := s.getPrepared(cmd.GetPreparedStatementHandle())
+	p, err := getPrepared(ctx, cmd.GetPreparedStatementHandle())
 	if err != nil {
 		return 0, err
 	}
@@ -213,9 +231,14 @@ func (s *Server) DoPutPreparedStatementUpdate(ctx context.Context, cmd fsql.Prep
 
 // --- eksekusi + audit ---
 
-// begin mencatat statement_start dan mengembalikan ctx eksekusi (dengan
-// QueryTimeout) serta end yang wajib dipanggil tepat sekali.
-func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, func(rows int64, err error)) {
+// begin mendaftarkan statement di sesi (kill membatalkannya), mencatat
+// statement_start, dan mengembalikan ctx eksekusi (dengan QueryTimeout) serta
+// end yang wajib dipanggil tepat sekali bila err nil.
+func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, func(rows, bytes int64, err error), error) {
+	ss, err := sess(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	id, _ := auth.FromContext(ctx)
 	ev := audit.Event{User: id.Subject, Source: id.Source, Kind: kind}
 	s.opts.Audit.SQL(&ev, sql)
@@ -226,13 +249,17 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 		s.log.Info("statement", "request_id", audit.RequestID(ctx), "user", id.Subject, "kind", kind, "sql", sql)
 	}
 
-	qctx, cancel := ctx, context.CancelFunc(func() {})
+	qctx, done := ss.Begin(ctx, sql)
+	cancel := context.CancelFunc(func() {})
 	if s.opts.QueryTimeout > 0 {
-		qctx, cancel = context.WithTimeout(ctx, s.opts.QueryTimeout)
+		qctx, cancel = context.WithTimeout(qctx, s.opts.QueryTimeout)
 	}
 	t0 := time.Now()
-	return qctx, func(rows int64, err error) {
+	return qctx, func(rows, bytes int64, err error) {
 		cancel()
+		done()
+		ss.Rows.Add(rows)
+		ss.Bytes.Add(bytes)
 		end := ev
 		end.Type, end.Rows, end.DurationMS = audit.StatementEnd, rows, time.Since(t0).Milliseconds()
 		switch {
@@ -244,18 +271,25 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 			end.Status = codes.OK.String()
 		}
 		s.opts.Audit.Emit(ctx, end)
-	}
+		s.opts.Metrics.Statement(id.Subject, end.Status, time.Since(t0))
+		if kind == "query" {
+			s.opts.Metrics.Sent(id.Subject, rows, bytes)
+		}
+	}, nil
 }
 
 // query mengeksekusi SELECT dan mengalirkan hasilnya. Timeout berlaku untuk
 // engine; stream memakai ctx RPC agar timeout muncul sebagai error ke klien,
 // bukan stream yang terpotong diam-diam.
 func (s *Server) query(ctx context.Context, sql string, params []any) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	qctx, end := s.begin(ctx, "query", sql)
+	qctx, end, err := s.begin(ctx, "query", sql)
+	if err != nil {
+		return nil, nil, err
+	}
 	rdr, err := s.eng.Query(qctx, sql, params...)
 	if err != nil {
 		err = toStatus(qctx, err)
-		end(0, err)
+		end(0, 0, err)
 		return nil, nil, err
 	}
 	ar := &auditedReader{RecordReader: rdr, qctx: qctx, end: end}
@@ -267,18 +301,21 @@ func (s *Server) query(ctx context.Context, sql string, params []any) (*arrow.Sc
 // update mengeksekusi statement untuk setiap baris parameter.
 // ponytail: satu Exec per baris, tanpa transaksi; bulk ingest di Fase 8.
 func (s *Server) update(ctx context.Context, sql string, rows [][]any) (int64, error) {
-	qctx, end := s.begin(ctx, "update", sql)
+	qctx, end, err := s.begin(ctx, "update", sql)
+	if err != nil {
+		return 0, err
+	}
 	var total int64
 	for _, args := range rows {
 		n, err := s.eng.Exec(qctx, sql, args...)
 		if err != nil {
 			err = toStatus(qctx, err)
-			end(total, err)
+			end(total, 0, err)
 			return total, err
 		}
 		total += n
 	}
-	end(total, nil)
+	end(total, 0, nil)
 	return total, nil
 }
 
@@ -286,18 +323,37 @@ func (s *Server) update(ctx context.Context, sql string, rows [][]any) (int64, e
 // memanggil end saat dilepas (StreamChunksFromReader me-Release sekali).
 type auditedReader struct {
 	array.RecordReader
-	qctx context.Context
-	rows int64
-	end  func(int64, error)
-	once sync.Once
+	qctx  context.Context
+	rows  int64
+	bytes int64
+	end   func(rows, bytes int64, err error)
+	once  sync.Once
 }
 
 func (r *auditedReader) Next() bool {
 	if !r.RecordReader.Next() {
 		return false
 	}
-	r.rows += r.RecordReader.RecordBatch().NumRows()
+	rec := r.RecordBatch()
+	r.rows += rec.NumRows()
+	for _, c := range rec.Columns() {
+		r.bytes += dataSize(c.Data())
+	}
 	return true
+}
+
+// dataSize total byte buffer Arrow (termasuk child), perkiraan byte terkirim.
+func dataSize(d arrow.ArrayData) int64 {
+	var n int64
+	for _, b := range d.Buffers() {
+		if b != nil {
+			n += int64(b.Len())
+		}
+	}
+	for _, c := range d.Children() {
+		n += dataSize(c)
+	}
+	return n
 }
 
 func (r *auditedReader) Err() error {
@@ -310,7 +366,7 @@ func (r *auditedReader) Err() error {
 func (r *auditedReader) Release() {
 	err := r.Err()
 	r.RecordReader.Release()
-	r.once.Do(func() { r.end(r.rows, err) })
+	r.once.Do(func() { r.end(r.rows, r.bytes, err) })
 }
 
 // --- metadata ---
@@ -464,10 +520,17 @@ func flightInfo(desc *flight.FlightDescriptor, ticket []byte) *flight.FlightInfo
 // toStatus memetakan error engine ke kode gRPC (CLAUDE.md: Canceled, DeadlineExceeded, ...).
 func toStatus(ctx context.Context, err error) error {
 	switch {
+	case errors.Is(context.Cause(ctx), session.ErrKilled):
+		return status.Error(codes.Canceled, session.ErrKilled.Error())
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())
 	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 		return status.Error(codes.Canceled, err.Error())
+	}
+	// Error UDF melewati DuckDB sebagai teks; keputusan izin sudah dibuat di
+	// sqlext, di sini hanya pemetaan kode.
+	if strings.Contains(err.Error(), sqlext.ErrPermissionDenied.Error()+":") {
+		return status.Error(codes.PermissionDenied, err.Error())
 	}
 	return status.Error(codes.InvalidArgument, err.Error())
 }

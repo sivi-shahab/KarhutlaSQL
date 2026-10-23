@@ -29,6 +29,8 @@ import (
 
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth/local"
+	"github.com/bankmega/karhutlasql/internal/auth/oidc"
+	"github.com/bankmega/karhutlasql/internal/authz"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
@@ -73,6 +75,8 @@ type envOpts struct {
 	auditSQL     bool
 	skipLogin    bool
 	engine       engine.Engine // nil = DuckDB in-memory dengan initSQL
+	policy       *authz.Store  // nil = DevPolicy(testUser)
+	oidc         *oidc.Verifier
 }
 
 func startServer(t *testing.T, initSQL string) *testEnv {
@@ -109,7 +113,11 @@ func start(t *testing.T, o envOpts) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := New(eng, log, Options{QueryTimeout: o.queryTimeout, Audit: al, Metrics: m})
+	policy := o.policy
+	if policy == nil {
+		policy = authz.Static(authz.DevPolicy(testUser))
+	}
+	srv, err := New(eng, log, Options{QueryTimeout: o.queryTimeout, Audit: al, Metrics: m, Policy: policy})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +125,7 @@ func start(t *testing.T, o envOpts) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ai := interceptor.NewAuth(authn, al, m, log)
+	ai := interceptor.NewAuth(interceptor.AuthOptions{Local: authn, OIDC: o.oidc, Policy: policy, Audit: al, Metrics: m, Log: log})
 	si := interceptor.NewSession(sessions, al, m)
 	done := make(chan error, 1)
 	go func() {

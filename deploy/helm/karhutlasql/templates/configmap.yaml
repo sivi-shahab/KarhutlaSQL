@@ -1,0 +1,10 @@
+{{- if .Values.policy }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "karhutlasql.fullname" . }}-policy
+  labels: {{- include "karhutlasql.labels" . | nindent 4 }}
+data:
+  policy.yaml: |
+    {{- .Values.policy | nindent 4 }}
+{{- end }}

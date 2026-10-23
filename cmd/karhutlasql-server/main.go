@@ -26,6 +26,8 @@ import (
 	"github.com/bankmega/karhutlasql/internal/admin"
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth/local"
+	"github.com/bankmega/karhutlasql/internal/auth/oidc"
+	"github.com/bankmega/karhutlasql/internal/authz"
 	"github.com/bankmega/karhutlasql/internal/config"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
@@ -108,6 +110,19 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}
 		initSQL = string(b)
 	}
+	policy, err := newPolicy(cfg, log)
+	if err != nil {
+		return err
+	}
+	var oidcVerifier *oidc.Verifier
+	if cfg.OIDCIssuer != "" {
+		oidcVerifier, err = oidc.New(ctx, oidc.Config{Issuer: cfg.OIDCIssuer, Audience: cfg.OIDCAudience,
+			UsernameClaim: cfg.OIDCUsernameClaim, GroupsClaim: cfg.OIDCGroupsClaim, ClockSkew: time.Minute})
+		if err != nil {
+			return err
+		}
+	}
+
 	sessions := session.NewRegistry(cfg.SessionIdleTimeout)
 	m := metrics.New(sessions.Counts)
 	eng, err := duckdb.Open(ctx, duckdb.Config{Path: cfg.DatabaseFilename, InitSQL: initSQL,
@@ -119,12 +134,12 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	}
 	defer func() { err = errors.Join(err, eng.Close()) }()
 
-	srv, err := flightsql.New(eng, log, flightsql.Options{QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m})
+	srv, err := flightsql.New(eng, log, flightsql.Options{QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m, Policy: policy})
 	if err != nil {
 		return err
 	}
 	health := healthCheck(eng, cfg.HealthCheckQuery)
-	ai := interceptor.NewAuth(authn, auditLog, m, log)
+	ai := interceptor.NewAuth(interceptor.AuthOptions{Local: authn, OIDC: oidcVerifier, Policy: policy, Audit: auditLog, Metrics: m, Log: log})
 	si := interceptor.NewSession(sessions, auditLog, m)
 
 	lc := &net.ListenConfig{}
@@ -161,16 +176,47 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		cancel()
 	}()
 	go sessions.Run(ctx, time.Minute)
+	go reloadOnSIGHUP(ctx, policy, auditLog, log)
 	n := 1
 	if adminLis != nil {
 		n++
-		h := admin.Handler(admin.Options{Health: health, Gatherer: m.Registry, Sessions: sessions, Verify: authn.Verify, Audit: auditLog})
+		h := admin.Handler(admin.Options{Health: health, Gatherer: m.Registry, Sessions: sessions, Verify: ai.Verify, Audit: auditLog})
 		go func() { errc <- admin.Serve(ctx, adminLis, h, log); cancel() }()
 	}
 	for range n {
 		err = errors.Join(err, <-errc)
 	}
 	return err
+}
+
+func newPolicy(cfg config.Config, log *slog.Logger) (*authz.Store, error) {
+	if cfg.PolicyFile == "" {
+		log.Warn("no policy file: only the local user is allowed, as admin (dev only)", "user", cfg.Username)
+		return authz.Static(authz.DevPolicy(cfg.Username)), nil
+	}
+	return authz.Load(cfg.PolicyFile)
+}
+
+// reloadOnSIGHUP memuat ulang policy; file tidak valid → policy lama tetap.
+func reloadOnSIGHUP(ctx context.Context, p *authz.Store, a *audit.Logger, log *slog.Logger) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGHUP)
+	defer signal.Stop(ch)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ch:
+			ev := audit.Event{Type: audit.PolicyReload, Status: "OK"}
+			if err := p.Reload(); err != nil {
+				ev.Status, ev.Error = "FAILED", err.Error()
+				log.Error("policy reload failed; keeping previous policy", "err", err)
+			} else {
+				log.Info("policy reloaded")
+			}
+			a.Emit(ctx, ev)
+		}
+	}
 }
 
 func newAudit(cfg config.Config, stdout io.Writer, log *slog.Logger) (*audit.Logger, func() error, error) {

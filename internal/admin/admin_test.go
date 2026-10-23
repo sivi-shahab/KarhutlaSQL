@@ -39,7 +39,7 @@ func TestHandler(t *testing.T) {
 		Health:   func(context.Context) error { return nil },
 		Gatherer: pr,
 		Sessions: reg,
-		Verify: func(tok string) (auth.Identity, error) {
+		Verify: func(_ context.Context, tok string) (auth.Identity, error) {
 			if id, ok := ids[tok]; ok {
 				return id, nil
 			}

@@ -35,6 +35,10 @@ type Config struct {
 	TLSCert, TLSKey, MTLSCA string
 	TLSSelfSigned           bool
 
+	PolicyFile                         string
+	OIDCIssuer, OIDCAudience           string
+	OIDCUsernameClaim, OIDCGroupsClaim string
+
 	QueryTimeout       time.Duration
 	SessionIdleTimeout time.Duration
 	HealthCheckQuery   string
@@ -65,6 +69,11 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.String("tls-cert", "", "sertifikat server PEM")
 	fs.String("tls-key", "", "kunci server PEM (0600)")
 	fs.String("mtls-ca", "", "CA PEM untuk verifikasi client cert (mTLS wajib bila diset)")
+	fs.String("policy-file", "", "policy YAML (spec §5.3); kosong = hanya user lokal sebagai admin (dev). Reload: SIGHUP")
+	fs.String("oidc-issuer", "", "issuer OIDC (Keycloak/Entra/Okta); kosong = OIDC mati")
+	fs.String("oidc-audience", "karhutlasql", "nilai wajib di claim aud token OIDC")
+	fs.String("oidc-username-claim", "preferred_username", "claim nama user OIDC (fallback sub)")
+	fs.String("oidc-groups-claim", "groups", "claim grup OIDC")
 	fs.Bool("tls-self-signed", false, "TLS dengan sertifikat self-signed di memori (dev/container; klien --tls-skip-verify)")
 
 	fs.Int("query-timeout", 0, "batas eksekusi statement dalam detik; 0 = tanpa batas")
@@ -108,6 +117,11 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		TLSKey:             v.GetString("tls-key"),
 		MTLSCA:             v.GetString("mtls-ca"),
 		TLSSelfSigned:      v.GetBool("tls-self-signed"),
+		PolicyFile:         v.GetString("policy-file"),
+		OIDCIssuer:         v.GetString("oidc-issuer"),
+		OIDCAudience:       v.GetString("oidc-audience"),
+		OIDCUsernameClaim:  v.GetString("oidc-username-claim"),
+		OIDCGroupsClaim:    v.GetString("oidc-groups-claim"),
 		QueryTimeout:       time.Duration(v.GetInt("query-timeout")) * time.Second,
 		SessionIdleTimeout: v.GetDuration("session-idle-timeout"),
 		HealthCheckQuery:   v.GetString("health-check-query"),
@@ -141,6 +155,9 @@ func (c Config) validate() error {
 	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		errs = append(errs, errors.New("tls-cert and tls-key must be set together"))
+	}
+	if c.OIDCIssuer != "" && (c.OIDCAudience == "" || c.PolicyFile == "") {
+		errs = append(errs, errors.New("oidc-issuer requires oidc-audience and policy-file (allowlist & roles)"))
 	}
 	if c.TLSSelfSigned && c.TLSCert != "" {
 		errs = append(errs, errors.New("tls-self-signed and tls-cert are mutually exclusive"))

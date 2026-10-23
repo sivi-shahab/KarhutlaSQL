@@ -66,6 +66,11 @@ func TestRegistry_Sweep(t *testing.T) {
 	}
 	now = exp.Add(time.Second)
 	r.Sweep()
+	if !r.Revoked("dead") {
+		t.Fatal("revocation dropped before MinRevocation")
+	}
+	now = now.Add(MinRevocation)
+	r.Sweep()
 	if r.Revoked("dead") || len(r.Snapshot()) != 0 {
 		t.Fatal("expired revocation/session not swept")
 	}

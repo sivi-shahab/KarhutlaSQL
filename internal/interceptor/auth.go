@@ -3,9 +3,11 @@ package interceptor
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"log/slog"
 	"strings"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -16,6 +18,8 @@ import (
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/auth/local"
+	"github.com/bankmega/karhutlasql/internal/auth/oidc"
+	"github.com/bankmega/karhutlasql/internal/authz"
 	"github.com/bankmega/karhutlasql/internal/metrics"
 )
 
@@ -30,14 +34,26 @@ const (
 // klien Flight Go/Java); RPC lain wajib Bearer yang valid.
 type Auth struct {
 	local   *local.Authenticator
+	oidc    *oidc.Verifier // nil = OIDC mati
+	policy  *authz.Store
 	audit   *audit.Logger
 	metrics *metrics.Metrics
 	log     *slog.Logger
 }
 
-// NewAuth membuat interceptor auth. m boleh nil.
-func NewAuth(l *local.Authenticator, a *audit.Logger, m *metrics.Metrics, log *slog.Logger) *Auth {
-	return &Auth{local: l, audit: a, metrics: m, log: log}
+// AuthOptions dependensi interceptor auth. OIDC dan Metrics boleh nil.
+type AuthOptions struct {
+	Local   *local.Authenticator
+	OIDC    *oidc.Verifier
+	Policy  *authz.Store
+	Audit   *audit.Logger
+	Metrics *metrics.Metrics
+	Log     *slog.Logger
+}
+
+// NewAuth membuat interceptor auth.
+func NewAuth(o AuthOptions) *Auth {
+	return &Auth{local: o.Local, oidc: o.OIDC, policy: o.Policy, audit: o.Audit, metrics: o.Metrics, log: o.Log}
 }
 
 // Unary interceptor unary.
@@ -123,6 +139,7 @@ func (a *Auth) handshake(ctx context.Context, ss grpc.ServerStream) (context.Con
 		a.fail(ctx, user, err.Error(), "invalid_credentials")
 		return ctx, errUnauthenticated
 	}
+	id.Roles = a.policy.Policy().RolesFor(id)
 	md := metadata.Pairs(authHeader, "Bearer "+token)
 	if err := ss.SetHeader(md); err != nil {
 		return ctx, status.Errorf(codes.Internal, "interceptor.handshake: %v", err)
@@ -137,13 +154,46 @@ func (a *Auth) bearer(ctx context.Context) (context.Context, error) {
 	if !strings.EqualFold(scheme, "Bearer") || cred == "" {
 		return ctx, status.Error(codes.Unauthenticated, "must authenticate first")
 	}
-	id, err := a.local.Verify(cred)
+	id, err := a.Verify(ctx, cred)
+	if err != nil {
+		return ctx, err
+	}
+	return auth.WithIdentity(ctx, id), nil
+}
+
+// Verify memverifikasi Bearer token (lokal atau OIDC, dibedakan dari iss),
+// menegakkan allowlist (E-02) dan mengisi role dari policy. Error berupa
+// status gRPC (Unauthenticated / PermissionDenied). Dipakai juga HTTP admin.
+func (a *Auth) Verify(ctx context.Context, token string) (auth.Identity, error) {
+	var claims jwt.RegisteredClaims
+	_, _, perr := jwt.NewParser().ParseUnverified(token, &claims) // hanya untuk routing; verifikasi di bawah
+	var (
+		id  auth.Identity
+		err error
+	)
+	switch {
+	case perr != nil:
+		err = perr
+	case claims.Issuer == local.Issuer:
+		id, err = a.local.Verify(token)
+	case a.oidc != nil && claims.Issuer == a.oidc.Issuer():
+		id, err = a.oidc.Verify(ctx, token)
+	default:
+		err = fmt.Errorf("unknown issuer %q", claims.Issuer)
+	}
 	if err != nil {
 		a.fail(ctx, "", "invalid bearer token", "invalid_token")
 		a.log.Debug("bearer rejected", "err", err, "request_id", audit.RequestID(ctx))
-		return ctx, status.Error(codes.Unauthenticated, "invalid or expired token")
+		return id, status.Error(codes.Unauthenticated, "invalid or expired token")
 	}
-	return auth.WithIdentity(ctx, id), nil
+	p := a.policy.Policy()
+	if !p.Allowed(id) {
+		a.audit.Emit(auth.WithIdentity(ctx, id), audit.Event{Type: audit.AuthzDeny, User: id.Subject, Source: id.Source, Peer: peerAddr(ctx), Error: "identity not in allowlist"})
+		a.metrics.AuthFailure("not_allowlisted")
+		return id, status.Error(codes.PermissionDenied, "identity is not allowed")
+	}
+	id.Roles = p.RolesFor(id)
+	return id, nil
 }
 
 // fail mencatat login_fail; label = alasan dari himpunan tetap (label metric).

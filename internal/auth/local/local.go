@@ -107,10 +107,6 @@ func keyID(k any) string {
 	return hex.EncodeToString(sum[:4])
 }
 
-// roles user lokal: satu-satunya user lokal adalah admin bootstrap; role dari
-// policy menyusul di Fase 5 (ADR 20).
-var roles = []string{auth.RoleAdmin}
-
 // Login memverifikasi kredensial dan menerbitkan token.
 func (a *Authenticator) Login(username, password string) (string, auth.Identity, error) {
 	userOK := subtle.ConstantTimeCompare([]byte(username), a.username) == 1
@@ -122,7 +118,7 @@ func (a *Authenticator) Login(username, password string) (string, auth.Identity,
 		return "", auth.Identity{}, ErrInvalidCredentials
 	}
 	now := a.now()
-	id := auth.Identity{Subject: username, Source: auth.SourceLocal, Roles: roles, TokenID: uuid.NewString(), ExpiresAt: now.Add(a.ttl)}
+	id := auth.Identity{Subject: username, Source: auth.SourceLocal, TokenID: uuid.NewString(), ExpiresAt: now.Add(a.ttl)}
 	tok := jwt.NewWithClaims(a.method, jwt.RegisteredClaims{
 		Issuer:    Issuer,
 		Subject:   id.Subject,
@@ -159,5 +155,5 @@ func (a *Authenticator) Verify(token string) (auth.Identity, error) {
 	if err != nil {
 		return auth.Identity{}, fmt.Errorf("local.Verify: %w", err)
 	}
-	return auth.Identity{Subject: claims.Subject, Source: auth.SourceLocal, Roles: roles, TokenID: claims.ID, ExpiresAt: claims.ExpiresAt.Time}, nil
+	return auth.Identity{Subject: claims.Subject, Source: auth.SourceLocal, TokenID: claims.ID, ExpiresAt: claims.ExpiresAt.Time}, nil
 }

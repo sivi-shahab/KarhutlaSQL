@@ -14,7 +14,8 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | google.golang.org/protobuf | BSD-3-Clause | Protobuf |
 | github.com/golang-jwt/jwt/v5 | MIT | JWT lokal |
 | github.com/coreos/go-oidc/v3 | Apache-2.0 | OIDC discovery & JWKS |
-| golang.org/x/oauth2 | BSD-3-Clause | Dependensi go-oidc |
+| github.com/go-jose/go-jose/v4 | Apache-2.0 | JWS/JWKS (dependensi go-oidc) |
+| golang.org/x/oauth2 | BSD-3-Clause | Device Code / PKCE / refresh token klien; dependensi go-oidc |
 | github.com/prometheus/client_golang | Apache-2.0 | Metrics (`/metrics`, `karhutla_metrics()`) |
 | github.com/prometheus/client_model, github.com/prometheus/common, github.com/prometheus/procfs | Apache-2.0 | Dependensi client_golang |
 | github.com/beorn7/perks, github.com/cespare/xxhash/v2 | MIT | Dependensi client_golang |
@@ -22,16 +23,16 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | github.com/spf13/cobra | Apache-2.0 | CLI |
 | github.com/spf13/viper | MIT | Konfigurasi |
 | github.com/spf13/pflag | BSD-3-Clause | Flag (dependensi cobra/viper) |
-| gopkg.in/yaml.v3 | MIT / Apache-2.0 | Policy file |
+| go.yaml.in/yaml/v3 | MIT / Apache-2.0 | Policy file (strict decode) |
 | golang.org/x/crypto | BSD-3-Clause | bcrypt |
 | golang.org/x/time | BSD-3-Clause | Rate limiter |
 | github.com/google/uuid | BSD-3-Clause | Session/statement ID |
 | golang.org/x/term | BSD-3-Clause | REPL klien (line editing, history, prompt password) |
-| SQL parser Go (dipilih di spike Fase 5b: `pganalyze/pg_query_go` BSD-3 / `xwb1989/sqlparser` Apache-2.0) | lihat kolom | Rewriter, masking, RLS |
+| github.com/pganalyze/pg_query_go/v6 | BSD-3-Clause; libpg_query terbundel: BSD-3-Clause + PostgreSQL License (permisif, setara MIT/BSD) | Target tulis statement DML/DDL untuk authz (Fase 5, ADR 21); kandidat parser rewriter Fase 5b |
 | github.com/apache/arrow-go/v18/parquet | Apache-2.0 | Writer access-history Parquet |
 | github.com/minio/minio-go/v7 | Apache-2.0 | Upload access-history ke MinIO (object-lock) |
 | golang.org/x/crypto/ed25519 (stdlib `crypto/ed25519`) | BSD-3-Clause | Tanda tangan manifest report |
-| github.com/zalando/go-keyring | MIT | Token store klien (E-10) |
+| github.com/zalando/go-keyring | MIT | *(belum dipakai)* token store keyring klien (E-10); Fase 5 memakai file 0600 |
 
 ## Dev / test only
 
@@ -44,6 +45,7 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | golang (image builder) | BSD-3-Clause | Build image |
 | busybox (image, init container Helm opsional) | GPL-2.0 (tidak di-link, proses terpisah) | Salin kunci TLS ke emptyDir 0600 |
 | kind | Apache-2.0 | Uji Helm lokal |
+| quay.io/keycloak/keycloak (image) | Apache-2.0 | IdP dev & integration test OIDC (`deploy/keycloak-dev`) |
 | prom/prometheus (image) | Apache-2.0 | `deploy/observability` (dev) |
 | grafana/grafana (image) | AGPL-3.0 (proses terpisah, tidak di-link/didistribusikan) | `deploy/observability` (dev) |
 | adbc-driver-flightsql (Python) | Apache-2.0 | Integration test |

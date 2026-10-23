@@ -19,11 +19,13 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/oauth2"
 	"golang.org/x/term"
 	"google.golang.org/grpc/status"
 
 	"github.com/bankmega/karhutlasql/internal/version"
 	"github.com/bankmega/karhutlasql/pkg/client"
+	"github.com/bankmega/karhutlasql/pkg/client/oauth"
 )
 
 func main() {
@@ -42,6 +44,11 @@ type options struct {
 	format      string
 	historyFile string
 	timing      bool
+
+	oidc      oauth.Config
+	oidcLogin bool
+	browser   bool
+	tokenFile string
 }
 
 func run(ctx context.Context, args []string, stdin *os.File, stdout, stderr io.Writer) int {
@@ -72,6 +79,11 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout, stderr io.W
 	fs.StringVar(&o.format, "format", "table", "format output: "+strings.Join(formats, "|"))
 	fs.StringVar(&o.historyFile, "history-file", filepath.Join(home, ".karhutlasql_history"), "file history REPL (0600); kosong = mati")
 	fs.BoolVar(&o.timing, "timing", false, "tampilkan durasi tiap statement")
+	fs.StringVar(&o.oidc.Issuer, "oidc-issuer", "", "issuer OIDC; diset = SSO (token tersimpan) menggantikan password")
+	fs.StringVar(&o.oidc.ClientID, "oidc-client-id", "karhutlasql", "client ID OIDC (public client)")
+	fs.BoolVar(&o.oidcLogin, "oidc-login", false, "login SSO baru (Device Code; --browser = Auth Code + PKCE) lalu simpan token")
+	fs.BoolVar(&o.browser, "browser", false, "dengan --oidc-login: login lewat browser (PKCE) alih-alih device code")
+	fs.StringVar(&o.tokenFile, "token-file", filepath.Join(home, ".karhutlasql", "token.json"), "file token SSO (0600)")
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
@@ -91,8 +103,14 @@ func (o *options) run(ctx context.Context, stdin *os.File, stdout, stderr io.Wri
 	}
 	interactive := isTerminal(stdin)
 	o.cfg.Addr = net.JoinHostPort(o.host, strconv.Itoa(o.port))
-	o.cfg.Password = os.Getenv(o.passwordEnv)
-	if o.cfg.Password == "" {
+	if o.oidcLogin && o.oidc.Issuer == "" {
+		return errors.New("--oidc-login requires --oidc-issuer")
+	}
+	if o.oidc.Issuer != "" {
+		if err := o.sso(ctx, stderr); err != nil {
+			return err
+		}
+	} else if o.cfg.Password = os.Getenv(o.passwordEnv); o.cfg.Password == "" {
 		if !interactive {
 			return fmt.Errorf("env %s is empty", o.passwordEnv)
 		}
@@ -124,6 +142,33 @@ func (o *options) run(ctx context.Context, stdin *os.File, stdout, stderr io.Wri
 	default:
 		return s.repl(ctx, stdin, o.historyFile)
 	}
+}
+
+// sso mengisi cfg.TokenSource dari login baru atau token tersimpan.
+func (o *options) sso(ctx context.Context, stderr io.Writer) error {
+	store := oauth.FileStore{Path: o.tokenFile}
+	var (
+		tok *oauth2.Token
+		err error
+	)
+	switch {
+	case o.oidcLogin && o.browser:
+		tok, err = oauth.BrowserLogin(ctx, o.oidc, stderr)
+	case o.oidcLogin:
+		tok, err = oauth.DeviceLogin(ctx, o.oidc, stderr)
+	default:
+		tok, err = store.Load(o.oidc)
+	}
+	if err != nil {
+		return err
+	}
+	if o.oidcLogin {
+		if err := store.Save(o.oidc, tok); err != nil {
+			return err
+		}
+	}
+	o.cfg.TokenSource, err = oauth.TokenSource(ctx, o.oidc, tok, store)
+	return err
 }
 
 func isTerminal(f *os.File) bool { return term.IsTerminal(int(f.Fd())) } //nolint:gosec // fd kecil

@@ -302,6 +302,10 @@ type slowEngine struct{ engine.Engine }
 
 func (slowEngine) Close() error { return nil }
 
+func (slowEngine) Analyze(context.Context, string) (engine.Analysis, error) {
+	return engine.Analysis{Kind: "SELECT", DefaultCatalog: "memory"}, nil
+}
+
 func (slowEngine) Query(ctx context.Context, _ string, _ ...any) (array.RecordReader, error) {
 	return &slowReader{ctx: ctx}, nil
 }

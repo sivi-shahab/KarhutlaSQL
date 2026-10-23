@@ -13,6 +13,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql"
+	"golang.org/x/oauth2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -28,6 +29,9 @@ type Config struct {
 	CAFile             string // CA PEM untuk verifikasi server; kosong = CA sistem
 	CertFile, KeyFile  string // client cert untuk mTLS
 	Username, Password string
+	// TokenSource (SSO, lihat pkg/client/oauth) menggantikan login password:
+	// access token dikirim sebagai Bearer di setiap RPC dan di-refresh otomatis.
+	TokenSource oauth2.TokenSource
 }
 
 func (c Config) tlsEnabled() bool {
@@ -37,7 +41,7 @@ func (c Config) tlsEnabled() bool {
 // Client koneksi terautentikasi ke server KarhutlaSQL.
 type Client struct {
 	cl     *flightsql.Client
-	bearer string
+	bearer func() (string, error)
 }
 
 // Dial membuka koneksi dan login (Handshake Basic → Bearer).
@@ -54,6 +58,15 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("client.Dial: %w", err)
 	}
+	if cfg.TokenSource != nil {
+		return &Client{cl: cl, bearer: func() (string, error) {
+			t, err := cfg.TokenSource.Token()
+			if err != nil {
+				return "", fmt.Errorf("client: token: %w", err)
+			}
+			return "Bearer " + t.AccessToken, nil
+		}}, nil
+	}
 	authCtx, err := cl.Client.AuthenticateBasicToken(ctx, cfg.Username, cfg.Password)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("client.Dial: login: %w", err), cl.Close())
@@ -63,7 +76,8 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	if len(auth) == 0 {
 		return nil, errors.Join(errors.New("client.Dial: server returned no bearer token"), cl.Close())
 	}
-	return &Client{cl: cl, bearer: auth[len(auth)-1]}, nil
+	b := auth[len(auth)-1]
+	return &Client{cl: cl, bearer: func() (string, error) { return b, nil }}, nil
 }
 
 func tlsConfig(cfg Config) (*tls.Config, error) {
@@ -88,14 +102,22 @@ func tlsConfig(cfg Config) (*tls.Config, error) {
 	return tc, nil
 }
 
-func (c *Client) ctx(ctx context.Context) context.Context {
-	return metadata.AppendToOutgoingContext(ctx, "authorization", c.bearer)
+func (c *Client) ctx(ctx context.Context) (context.Context, error) {
+	b, err := c.bearer()
+	if err != nil {
+		return nil, err
+	}
+	return metadata.AppendToOutgoingContext(ctx, "authorization", b), nil
 }
 
 // Query mengeksekusi sql dan mengembalikan stream hasil; pemanggil wajib
 // Release. Pembatalan ctx membatalkan query di server.
 func (c *Client) Query(ctx context.Context, sql string) (*flight.Reader, error) {
-	info, err := c.cl.Execute(c.ctx(ctx), sql)
+	ctx, err := c.ctx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	info, err := c.cl.Execute(ctx, sql)
 	if err != nil {
 		return nil, fmt.Errorf("client.Query: %w", err)
 	}
@@ -104,7 +126,11 @@ func (c *Client) Query(ctx context.Context, sql string) (*flight.Reader, error) 
 
 // Tables mengembalikan daftar tabel (Flight SQL GetTables).
 func (c *Client) Tables(ctx context.Context) (*flight.Reader, error) {
-	info, err := c.cl.GetTables(c.ctx(ctx), &flightsql.GetTablesOpts{})
+	ctx, err := c.ctx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	info, err := c.cl.GetTables(ctx, &flightsql.GetTablesOpts{})
 	if err != nil {
 		return nil, fmt.Errorf("client.Tables: %w", err)
 	}
@@ -117,7 +143,8 @@ func (c *Client) fetch(ctx context.Context, info *flight.FlightInfo) (*flight.Re
 	if len(info.Endpoint) != 1 {
 		return nil, fmt.Errorf("client.fetch: %d endpoints, want 1", len(info.Endpoint))
 	}
-	rdr, err := c.cl.DoGet(c.ctx(ctx), info.Endpoint[0].Ticket)
+	// ctx sudah membawa Bearer (Query/Tables).
+	rdr, err := c.cl.DoGet(ctx, info.Endpoint[0].Ticket)
 	if err != nil {
 		return nil, fmt.Errorf("client.fetch: %w", err)
 	}

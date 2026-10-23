@@ -17,6 +17,9 @@ import (
 // ErrRevoked token sesi sudah di-kill.
 var ErrRevoked = errors.New("session killed")
 
+// MinRevocation lama minimum token sesi yang di-kill tetap ditolak.
+const MinRevocation = 24 * time.Hour
+
 // ErrKilled cause pembatalan statement oleh kill session.
 var ErrKilled = errors.New("session killed by administrator")
 
@@ -96,7 +99,13 @@ func (r *Registry) Kill(id string) bool {
 	s, ok := r.sessions[id]
 	if ok {
 		delete(r.sessions, id)
-		r.revoked[id] = s.exp
+		// Minimal 24 jam: token OIDC baru hasil refresh membawa sid yang sama
+		// dengan exp lebih lama (spec §6: TTL token ≤ 24h).
+		until := r.now().Add(MinRevocation)
+		if s.exp.After(until) {
+			until = s.exp
+		}
+		r.revoked[id] = until
 	}
 	r.mu.Unlock()
 	if !ok {

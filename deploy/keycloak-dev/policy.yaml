@@ -1,0 +1,14 @@
+# Policy dev untuk realm Keycloak ini (format spec §5.3 + allowlist E-02).
+default: deny
+allow:
+  domains: [bankmega.com]
+roles:
+  admin:   { catalogs: { "*": [read, write, admin] } }
+  analyst: { catalogs: { warehouse: [read], sandbox: [read, write] } }
+subjects:
+  - match: { claim: groups, equals: data-platform }
+    roles: [admin]
+  - match: { claim: email, endswith: "@bankmega.com" }
+    roles: [analyst]
+  - match: { user: admin }
+    roles: [admin]

@@ -17,6 +17,14 @@ tls:
   # bisa dibaca group; fsGroup membuat mount Secret 0440).
   initImage: busybox:1.37
 
+# Isi policy.yaml (spec §5.3 + allow). Kosong = hanya user lokal sebagai
+# admin (dev). Perubahan me-restart pod (annotation checksum).
+policy: ""
+
+oidc:
+  issuer: ""            # mis. https://sso.corp/realms/data; wajib policy
+  audience: karhutlasql
+
 queryTimeout: 300
 extraArgs: []
 

@@ -21,6 +21,10 @@ type Engine interface {
 	Exec(ctx context.Context, sql string, args ...any) (int64, error)
 	// Describe menyiapkan statement tanpa mengeksekusinya.
 	Describe(ctx context.Context, sql string) (StatementInfo, error)
+	// Analyze mem-bind tepat satu statement tanpa mengeksekusinya dan
+	// melaporkan apa yang disentuhnya (input keputusan authz). Lebih dari satu
+	// statement → error.
+	Analyze(ctx context.Context, sql string) (Analysis, error)
 
 	// Catalogs: (catalog_name).
 	Catalogs(ctx context.Context) (array.RecordReader, error)
@@ -43,6 +47,23 @@ type StatementInfo struct {
 	ReturnsRows bool
 	// Schema hasil bila bisa ditentukan tanpa eksekusi; nil bila tidak diketahui.
 	Schema *arrow.Schema
+}
+
+// Analysis hasil Engine.Analyze.
+type Analysis struct {
+	// Kind tipe statement menurut parser engine (SELECT, INSERT, UPDATE,
+	// DELETE, CREATE, DROP, ALTER, COPY, ATTACH, ...).
+	Kind string
+	// Catalogs yang tabelnya dibaca, hasil resolusi binder (termasuk tabel
+	// di balik view dan scan yang dibuang optimizer).
+	Catalogs []string
+	// Functions table function / scan non-tabel yang dipakai (nama huruf
+	// besar, mis. RANGE, READ_CSV).
+	Functions []string
+	// DefaultCatalog catalog untuk nama tak berkualifikasi; AllCatalogs semua
+	// catalog ter-attach (resolusi nama target tulis).
+	DefaultCatalog string
+	AllCatalogs    []string
 }
 
 // TableFilter filter untuk Engine.Tables. Pattern memakai sintaks LIKE; nil = semua.

@@ -24,8 +24,9 @@ type Options struct {
 	Health   func(context.Context) error
 	Gatherer prometheus.Gatherer
 	Sessions *session.Registry
-	// Verify memverifikasi Bearer token (sama dengan jalur gRPC).
-	Verify func(token string) (auth.Identity, error)
+	// Verify memverifikasi Bearer token (sama dengan jalur gRPC: issuer,
+	// allowlist, role dari policy).
+	Verify func(ctx context.Context, token string) (auth.Identity, error)
 	Audit  *audit.Logger
 }
 
@@ -73,7 +74,7 @@ func (o Options) admin(h func(http.ResponseWriter, *http.Request, auth.Identity)
 			http.Error(w, "bearer token required", http.StatusUnauthorized)
 			return
 		}
-		id, err := o.Verify(strings.TrimSpace(token))
+		id, err := o.Verify(r.Context(), strings.TrimSpace(token))
 		if err != nil || o.Sessions.Revoked(id.TokenID) {
 			http.Error(w, "invalid or expired token", http.StatusUnauthorized)
 			return

@@ -20,6 +20,11 @@ karhutlasql-client --host db.corp --tls-ca ca.crt --format csv < report.sql > ou
 | `--format` | `table` | `table`, `csv`, `json` (satu objek per baris) |
 | `--timing` | off | durasi tiap statement |
 | `--history-file` | `~/.karhutlasql_history` | 0600; `""` = mati |
+| `--oidc-issuer` | | SSO: pakai token tersimpan (menggantikan password) |
+| `--oidc-login` | off | login SSO baru (Device Code) lalu simpan token |
+| `--browser` | off | dengan `--oidc-login`: Auth Code + PKCE lewat browser |
+| `--oidc-client-id` | `karhutlasql` | client publik di IdP |
+| `--token-file` | `~/.karhutlasql/token.json` | token SSO (0600), di-refresh otomatis |
 
 Statement diakhiri `;` (statement terakhir tanpa `;` tetap dieksekusi). Mode
 `-c`/stdin berhenti di error pertama dengan exit code 1; REPL melanjutkan.
@@ -29,4 +34,18 @@ Meta command (REPL dan stdin): `\dt` daftar tabel, `\timing` toggle, `\?` bantua
 
 Format `table` menampung seluruh hasil di memori; pakai `csv`/`json` untuk hasil besar.
 
-Library Go: `pkg/client` (`client.Dial`, `Query`, `Tables`).
+## SSO
+
+```bash
+karhutlasql-client --host db.corp --tls-ca ca.crt \
+  --oidc-issuer https://sso.corp/realms/data --oidc-login     # cetak URL + kode, tunggu login
+karhutlasql-client --host db.corp --tls-ca ca.crt \
+  --oidc-issuer https://sso.corp/realms/data -c "SELECT 1"    # pakai token tersimpan
+```
+
+Device Code cocok untuk SSH/headless; `--browser` membuka browser dan menerima
+redirect di `127.0.0.1`. Token di-refresh 60 detik sebelum kedaluwarsa.
+
+Library Go: `pkg/client` (`client.Dial`, `Query`, `Tables`; `Config.TokenSource`
+untuk SSO) dan `pkg/client/oauth` (`DeviceLogin`, `BrowserLogin`, `FileStore`,
+`TokenSource`).

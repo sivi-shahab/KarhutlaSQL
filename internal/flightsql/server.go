@@ -21,6 +21,7 @@ import (
 
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
+	"github.com/bankmega/karhutlasql/internal/authz"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/metrics"
 	"github.com/bankmega/karhutlasql/internal/session"
@@ -39,6 +40,7 @@ type Options struct {
 	PrintQueries bool
 	Audit        *audit.Logger
 	Metrics      *metrics.Metrics // nil = tanpa metrics
+	Policy       *authz.Store     // wajib
 }
 
 // Server mengimplementasikan flightsql.Server di atas engine.Engine.
@@ -62,8 +64,8 @@ type prepared struct {
 
 // New membuat Server. opts.Audit wajib.
 func New(eng engine.Engine, log *slog.Logger, opts Options) (*Server, error) {
-	if opts.Audit == nil {
-		return nil, errors.New("flightsql.New: audit logger is required")
+	if opts.Audit == nil || opts.Policy == nil {
+		return nil, errors.New("flightsql.New: audit logger and policy are required")
 	}
 	s := &Server{eng: eng, log: log, opts: opts}
 	s.Alloc = memory.DefaultAllocator
@@ -139,6 +141,9 @@ func (s *Server) CreatePreparedStatement(ctx context.Context, req fsql.ActionCre
 	}
 	ss, err := sess(ctx)
 	if err != nil {
+		return fsql.ActionCreatePreparedStatementResult{}, err
+	}
+	if err := s.authorize(ctx, req.GetQuery()); err != nil {
 		return fsql.ActionCreatePreparedStatementResult{}, err
 	}
 	info, err := s.eng.Describe(ctx, req.GetQuery())
@@ -231,9 +236,10 @@ func (s *Server) DoPutPreparedStatementUpdate(ctx context.Context, cmd fsql.Prep
 
 // --- eksekusi + audit ---
 
-// begin mendaftarkan statement di sesi (kill membatalkannya), mencatat
-// statement_start, dan mengembalikan ctx eksekusi (dengan QueryTimeout) serta
-// end yang wajib dipanggil tepat sekali bila err nil.
+// begin mencatat statement_start, menegakkan policy (gagal → statement_end
+// + error), mendaftarkan statement di sesi (kill membatalkannya), dan
+// mengembalikan ctx eksekusi (dengan QueryTimeout) serta end yang wajib
+// dipanggil tepat sekali bila err nil.
 func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, func(rows, bytes int64, err error), error) {
 	ss, err := sess(ctx)
 	if err != nil {
@@ -255,27 +261,32 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 		qctx, cancel = context.WithTimeout(qctx, s.opts.QueryTimeout)
 	}
 	t0 := time.Now()
-	return qctx, func(rows, bytes int64, err error) {
+	end := func(rows, bytes int64, err error) {
 		cancel()
 		done()
 		ss.Rows.Add(rows)
 		ss.Bytes.Add(bytes)
-		end := ev
-		end.Type, end.Rows, end.DurationMS = audit.StatementEnd, rows, time.Since(t0).Milliseconds()
+		fin := ev
+		fin.Type, fin.Rows, fin.DurationMS = audit.StatementEnd, rows, time.Since(t0).Milliseconds()
 		switch {
 		case err != nil:
-			end.Status, end.Error = status.Code(err).String(), status.Convert(err).Message()
+			fin.Status, fin.Error = status.Code(err).String(), status.Convert(err).Message()
 		case ctx.Err() != nil:
-			end.Status = codes.Canceled.String() // klien memutus stream
+			fin.Status = codes.Canceled.String() // klien memutus stream
 		default:
-			end.Status = codes.OK.String()
+			fin.Status = codes.OK.String()
 		}
-		s.opts.Audit.Emit(ctx, end)
-		s.opts.Metrics.Statement(id.Subject, end.Status, time.Since(t0))
+		s.opts.Audit.Emit(ctx, fin)
+		s.opts.Metrics.Statement(id.Subject, fin.Status, time.Since(t0))
 		if kind == "query" {
 			s.opts.Metrics.Sent(id.Subject, rows, bytes)
 		}
-	}, nil
+	}
+	if err := s.authorize(qctx, sql); err != nil {
+		end(0, 0, err)
+		return nil, nil, err
+	}
+	return qctx, end, nil
 }
 
 // query mengeksekusi SELECT dan mengalirkan hasilnya. Timeout berlaku untuk
@@ -376,7 +387,7 @@ func (s *Server) GetFlightInfoCatalogs(_ context.Context, desc *flight.FlightDes
 }
 
 func (s *Server) DoGetCatalogs(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	return s.metadata(ctx, schema_ref.Catalogs, func() (array.RecordReader, error) { return s.eng.Catalogs(ctx) })
+	return s.metadata(ctx, schema_ref.Catalogs, func() (array.RecordReader, error) { return s.eng.Catalogs(ctx) }, true)
 }
 
 func (s *Server) GetFlightInfoSchemas(_ context.Context, _ fsql.GetDBSchemas, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
@@ -386,7 +397,7 @@ func (s *Server) GetFlightInfoSchemas(_ context.Context, _ fsql.GetDBSchemas, de
 func (s *Server) DoGetDBSchemas(ctx context.Context, cmd fsql.GetDBSchemas) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	return s.metadata(ctx, schema_ref.DBSchemas, func() (array.RecordReader, error) {
 		return s.eng.Schemas(ctx, cmd.GetCatalog(), cmd.GetDBSchemaFilterPattern())
-	})
+	}, true)
 }
 
 func (s *Server) GetFlightInfoTables(_ context.Context, _ fsql.GetTables, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
@@ -403,7 +414,7 @@ func (s *Server) DoGetTables(ctx context.Context, cmd fsql.GetTables) (*arrow.Sc
 		})
 	}
 	if !cmd.GetIncludeSchema() {
-		return s.metadata(ctx, schema_ref.Tables, query)
+		return s.metadata(ctx, schema_ref.Tables, query, true)
 	}
 	return s.tablesWithSchema(ctx, query)
 }
@@ -413,15 +424,17 @@ func (s *Server) GetFlightInfoTableTypes(_ context.Context, desc *flight.FlightD
 }
 
 func (s *Server) DoGetTableTypes(ctx context.Context) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	return s.metadata(ctx, schema_ref.TableTypes, func() (array.RecordReader, error) { return s.eng.TableTypes(ctx) })
+	return s.metadata(ctx, schema_ref.TableTypes, func() (array.RecordReader, error) { return s.eng.TableTypes(ctx) }, false)
 }
 
 // tablesWithSchema menambahkan kolom table_schema (schema IPC per tabel).
 func (s *Server) tablesWithSchema(ctx context.Context, query func() (array.RecordReader, error)) (*arrow.Schema, <-chan flight.StreamChunk, error) {
-	recs, err := collect(query)
+	all, err := collect(query)
 	if err != nil {
 		return nil, nil, toStatus(ctx, err)
 	}
+	recs := s.filterCatalogs(ctx, all)
+	releaseAll(all)
 	defer releaseAll(recs)
 	out := make([]arrow.RecordBatch, 0, len(recs))
 	defer func() { releaseAll(out) }()
@@ -451,10 +464,17 @@ func (s *Server) tablesWithSchema(ctx context.Context, query func() (array.Recor
 
 // metadata menjalankan query metadata engine lalu memberi label schema protokol
 // (urutan & tipe kolom dijamin kontrak engine.Engine).
-func (s *Server) metadata(ctx context.Context, sch *arrow.Schema, query func() (array.RecordReader, error)) (*arrow.Schema, <-chan flight.StreamChunk, error) {
+// byCatalog: kolom 0 = catalog_name → baris catalog yang tidak boleh dibaca
+// pemanggil dibuang (E-03).
+func (s *Server) metadata(ctx context.Context, sch *arrow.Schema, query func() (array.RecordReader, error), byCatalog bool) (*arrow.Schema, <-chan flight.StreamChunk, error) {
 	recs, err := collect(query)
 	if err != nil {
 		return nil, nil, toStatus(ctx, err)
+	}
+	if byCatalog {
+		all := recs
+		recs = s.filterCatalogs(ctx, all)
+		releaseAll(all)
 	}
 	defer releaseAll(recs)
 	out := make([]arrow.RecordBatch, len(recs))

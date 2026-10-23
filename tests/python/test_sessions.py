@@ -1,5 +1,6 @@
 """Session registry, kill session, dan metrics lewat ADBC + HTTP admin."""
 
+import gc
 import threading
 import time
 import urllib.request
@@ -51,6 +52,8 @@ def test_kill_session_cancels_and_revokes(server):
         scalar(a, "SELECT 1")
     assert scalar(b, "SELECT 1") == [(1,)]
     b.close()
+    del a
+    gc.collect()  # GC koneksi A di dalam scope filterwarnings, bukan di akhir sesi
 
 
 def test_metrics_endpoint_and_sql(conn, server):

@@ -1,0 +1,89 @@
+{
+  "realm": "karhutlasql",
+  "enabled": true,
+  "accessTokenLifespan": 300,
+  "groups": [
+    {
+      "name": "data-platform"
+    }
+  ],
+  "users": [
+    {
+      "username": "ana",
+      "enabled": true,
+      "email": "ana@bankmega.com",
+      "emailVerified": true,
+      "firstName": "Ana",
+      "lastName": "Dev",
+      "groups": []
+    },
+    {
+      "username": "dian",
+      "enabled": true,
+      "email": "dian@bankmega.com",
+      "emailVerified": true,
+      "firstName": "Dian",
+      "lastName": "Dev",
+      "groups": [
+        "/data-platform"
+      ]
+    },
+    {
+      "username": "eve",
+      "enabled": true,
+      "email": "eve@gmail.com",
+      "emailVerified": true,
+      "firstName": "Eve",
+      "lastName": "Dev",
+      "groups": []
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "karhutlasql",
+      "name": "KarhutlaSQL",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "consentRequired": false,
+      "redirectUris": [
+        "http://127.0.0.1/*"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true",
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "email"
+      ],
+      "protocolMappers": [
+        {
+          "name": "audience karhutlasql",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "karhutlasql",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

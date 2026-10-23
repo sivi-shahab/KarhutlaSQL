@@ -141,7 +141,9 @@ func (e *Engine) Describe(ctx context.Context, query string) (engine.StatementIn
 		return engine.StatementInfo{}, fmt.Errorf("duckdb.Describe: %w", err)
 	}
 	defer func() { _ = c.Close() }()
-	ds, err := c.PrepareContext(ctx, query)
+	// Prepare, bukan PrepareContext: PrepareContext duckdb-go mengeksekusi
+	// semua statement kecuali yang terakhir pada input multi-statement.
+	ds, err := c.Prepare(query)
 	if err != nil {
 		return engine.StatementInfo{}, fmt.Errorf("duckdb.Describe: %w", err)
 	}

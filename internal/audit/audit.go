@@ -22,6 +22,8 @@ const (
 	StatementStart = "statement_start"
 	StatementEnd   = "statement_end"
 	SessionKilled  = "session_killed"
+	AuthzDeny      = "authz_deny"
+	PolicyReload   = "policy_reload"
 )
 
 // Event satu baris audit (JSON). Field kosong dihilangkan.

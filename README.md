@@ -25,25 +25,28 @@ Server SQL analitik ringan: **Apache Arrow Flight SQL** di atas **DuckDB**, ditu
 
 ```mermaid
 flowchart LR
-    clients["Klien BI & ADBC<br/>JDBC / ADBC / CLI"]
-    agents["Agen AI<br/>Claude / Copilot"]
-    idp["IdP OIDC<br/>Keycloak · JWKS"]
-    obs["Observabilitas<br/>Prometheus · OTel"]
-    vault["Vault Transit<br/>kunci Ed25519 / HSM"]
+    clients["Klien BI & ADBC<br/>Superset · Grafana · JDBC/ADBC"]
+    agents["Agen AI<br/>Claude · Copilot via MCP"]
+    gx["Airflow + GX<br/>Great Expectations"]
+    idp["IdP OIDC<br/>Keycloak · go-oidc · JWT"]
+    obs["Observabilitas<br/>Prometheus · Grafana · OTel"]
+    vault["Vault Transit<br/>HashiCorp Vault · Ed25519"]
+    uc["Unity Catalog OSS<br/>katalog metadata (REST)"]
     subgraph srv["Proses karhutlasql-server (per instance / kelas beban)"]
-        grpc["Flight SQL server<br/>gRPC TLS · auth · sesi"]
-        mcp["Server MCP<br/>/mcp HTTP · stdio"]
-        gov["Governance<br/>authz · masking · RLS"]
-        exec["Eksekusi<br/>antrean · kuota · cache"]
-        engine["Engine DuckDB<br/>stream Arrow · guardrail"]
-        ops["Report & operasi<br/>report run · backup · DQ"]
+        grpc["Flight SQL server<br/>arrow-go Flight SQL · grpc-go"]
+        mcp["Server MCP<br/>MCP go-sdk · HTTP / stdio"]
+        gov["Governance<br/>pg_query_go · policy YAML"]
+        exec["Eksekusi<br/>antrean · kuota · result cache"]
+        engine["Engine DuckDB<br/>DuckDB 1.5.6 · duckdb-go"]
+        ops["Report & operasi<br/>report · backup · DQ · UC sync"]
     end
-    duckfile[("File DuckDB")]
+    duckfile[("File DuckDB<br/>warehouse.duckdb")]
     lake[("DuckLake<br/>Postgres + MinIO")]
-    archive[("Arsip WORM<br/>S3 object-lock")]
+    archive[("Arsip WORM<br/>MinIO / S3 · Parquet")]
 
     clients -- Flight SQL --> grpc
     agents -- MCP --> mcp
+    gx -- dq_snapshot · dq_publish --> grpc
     mcp -. gRPC in-process .-> grpc
     idp -. JWKS .-> grpc
     grpc -- statement --> gov
@@ -56,10 +59,11 @@ flowchart LR
     gov -- report_run --> ops
     ops -- manifest --> archive
     ops -. tanda tangan .-> vault
+    ops -. sync metadata .-> uc
 ```
 
 **[▶ Buka diagram interaktif](https://sivi-shahab.github.io/KarhutlaSQL/diagram/arsitektur.html)**
-(klik komponen, telusuri jalur, ekspor PNG/SVG) — juga di halaman
+(klik komponen, badge **SRC** membuka kode sumbernya, telusuri jalur, ekspor PNG/SVG; daftar lengkap tool open source ada di kartu bawah diagram) — juga di halaman
 [Diagram arsitektur](https://sivi-shahab.github.io/KarhutlaSQL/architecture/) situs
 dokumentasi. Sumber diagram: [`docs/diagram/arsitektur.architecture.json`](docs/diagram/arsitektur.architecture.json).
 

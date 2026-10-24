@@ -39,6 +39,9 @@ type Engine interface {
 	// false bila salah satu catalog tidak punya versi yang bisa dipercaya
 	// (sumber eksternal). Kunci result cache.
 	DataVersion(ctx context.Context, catalogs []string) (string, bool, error)
+	// Ingest menulis seluruh rdr ke tabel t dalam satu transaksi (bulk
+	// ingest Flight SQL) dan mengembalikan jumlah baris.
+	Ingest(ctx context.Context, t IngestTarget, rdr array.RecordReader) (int64, error)
 	// Snapshot membuka satu transaksi: semua Query di dalamnya melihat data
 	// yang sama (report run, G-10). Pemanggil wajib Close.
 	Snapshot(ctx context.Context) (Snapshot, error)
@@ -62,6 +65,25 @@ type Snapshot interface {
 	Query(ctx context.Context, sql string, args ...any) (array.RecordReader, error)
 	// Close mengakhiri transaksi (rollback: snapshot tidak menulis).
 	Close() error
+}
+
+// IngestMode perilaku Ingest bila tabel (tidak) ada.
+type IngestMode int
+
+const (
+	IngestCreate  IngestMode = iota // IfNotExists: buat tabel dari schema stream
+	IngestAppend                    // IfExists: tambah baris (BY NAME)
+	IngestReplace                   // IfExists: ganti tabel
+	IngestFail                      // tolak (ErrIngestTarget)
+)
+
+// ErrIngestTarget tabel target tidak memenuhi mode ingest.
+var ErrIngestTarget = errors.New("ingest target")
+
+// IngestTarget tabel tujuan bulk ingest.
+type IngestTarget struct {
+	Catalog, Schema, Table string
+	IfNotExists, IfExists  IngestMode
 }
 
 // StatementInfo hasil Describe.

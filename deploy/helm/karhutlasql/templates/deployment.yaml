@@ -101,6 +101,15 @@ spec:
             - --report-signing-key-file=/keys/report.key
             {{- end }}
             - --dq-max-age={{ .Values.dq.maxAge }}
+            {{- with .Values.reportSigning.vaultKey }}
+            - --report-signing-vault-key={{ . }}
+            {{- end }}
+            {{- if .Values.archive.s3.endpoint }}
+            - --backup-interval={{ .Values.backup.interval }}
+            - --backup-retention-daily={{ .Values.backup.retention.daily }}
+            - --backup-retention-weekly={{ .Values.backup.retention.weekly }}
+            - --backup-retention-monthly={{ .Values.backup.retention.monthly }}
+            {{- end }}
             {{- with .Values.unityCatalog.endpoint }}
             - --uc-endpoint={{ . }}
             - --uc-sync-interval={{ $.Values.unityCatalog.syncInterval }}

@@ -194,3 +194,46 @@ func (s *S3) List(ctx context.Context, prefix string) ([]string, error) {
 }
 
 func (s *S3) String() string { return "s3://" + s.cfg.Bucket + " @ " + s.cfg.Endpoint }
+
+// FilePutter Store yang menyimpan file secara streaming dengan retensi per
+// objek (backup bertingkat: retensi berbeda per tingkat). retention 0 =
+// retensi default Store.
+type FilePutter interface {
+	Store
+	PutFile(ctx context.Context, key, path string, retention time.Duration) error
+}
+
+// PutFile lihat FilePutter (Dir tidak punya retensi).
+func (d Dir) PutFile(ctx context.Context, key, path string, _ time.Duration) error {
+	b, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("objstore.PutFile: %w", err)
+	}
+	return d.Put(ctx, key, b) // ponytail: Dir hanya dev/test, file dimuat utuh
+}
+
+// PutFile lihat FilePutter: stream dari file, dikunci COMPLIANCE sampai
+// now+retention.
+func (s *S3) PutFile(ctx context.Context, key, path string, retention time.Duration) error {
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("objstore.PutFile: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	st, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("objstore.PutFile: %w", err)
+	}
+	if retention <= 0 {
+		retention = s.cfg.Retention
+	}
+	opts := minio.PutObjectOptions{Mode: minio.Compliance, RetainUntilDate: time.Now().Add(retention).UTC(), ContentType: "application/octet-stream"}
+	opts.SetMatchETagExcept("*")
+	if _, err := s.c.PutObject(ctx, s.cfg.Bucket, key, f, st.Size(), opts); err != nil {
+		if minio.ToErrorResponse(err).Code == "PreconditionFailed" {
+			return fmt.Errorf("objstore.PutFile %s: %w", key, ErrExists)
+		}
+		return fmt.Errorf("objstore.PutFile: %w", err)
+	}
+	return nil
+}

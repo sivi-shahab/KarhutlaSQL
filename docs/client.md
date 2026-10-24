@@ -49,3 +49,18 @@ redirect di `127.0.0.1`. Token di-refresh 60 detik sebelum kedaluwarsa.
 Library Go: `pkg/client` (`client.Dial`, `Query`, `Tables`; `Config.TokenSource`
 untuk SSO) dan `pkg/client/oauth` (`DeviceLogin`, `BrowserLogin`, `FileStore`,
 `TokenSource`).
+
+## Kemampuan Flight SQL lain
+
+- **Bulk ingest** (`CommandStatementIngest`): mis. Python
+  `cursor.adbc_ingest("tabel", arrow_table, mode="create"|"append"|"replace"|"create_append")`
+  atau Go `flightsql.Client.ExecuteIngest`. Stream Arrow ditulis ke satu tabel
+  dalam satu transaksi (gagal = tidak ada baris masuk); butuh izin `write` pada
+  tabel target (role SELECT-only dan kanal MCP ditolak); antrean, kuota, audit,
+  dan access history seperti statement tulis. Tabel temporary dan transaksi
+  Flight SQL tidak didukung.
+- **PollFlightInfo** (eksekusi inkremental ADBC): selalu selesai pada poll
+  pertama (`progress = 1`); query dieksekusi dan di-stream saat DoGet.
+- **GetSqlInfo**: nama/versi server & Arrow, dialek DuckDB (case identifier,
+  urutan NULL, subquery, union, keyword dari `duckdb_keywords()`, fungsi
+  skalar), bulk ingest didukung, transaksi tidak, timeout statement.

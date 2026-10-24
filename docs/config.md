@@ -21,6 +21,11 @@ flag `*-file` menunjuk file (kunci privat wajib 0600).
 | `--archive-s3-secret-key-env` | `KARHUTLASQL_ARCHIVE_S3_SECRET_KEY_ENV` | `KARHUTLASQL_ARCHIVE_SECRET_KEY` | nama env var secret key S3 arsip |
 | `--audit-log-dir` | `KARHUTLASQL_AUDIT_LOG_DIR` | — | direktori audit log harian (0600); kosong = stdout |
 | `--audit-log-sql` | `KARHUTLASQL_AUDIT_LOG_SQL` | `false` | sertakan teks SQL di audit (default hanya SHA-256; hati-hati PII) |
+| `--backup-interval` | `KARHUTLASQL_BACKUP_INTERVAL` | `0s` | interval backup terjadwal ke arsip (EXPORT DATABASE catalog DuckDB + snapshot DuckLake); 0 = hanya DoAction backup |
+| `--backup-retention-daily` | `KARHUTLASQL_BACKUP_RETENTION_DAILY` | `168h0m0s` | retensi object-lock backup harian |
+| `--backup-retention-monthly` | `KARHUTLASQL_BACKUP_RETENTION_MONTHLY` | `9600h0m0s` | retensi object-lock backup bulanan (tanggal 1 UTC) |
+| `--backup-retention-weekly` | `KARHUTLASQL_BACKUP_RETENTION_WEEKLY` | `840h0m0s` | retensi object-lock backup mingguan (Minggu UTC) |
+| `--backup-staging-dir` | `KARHUTLASQL_BACKUP_STAGING_DIR` | — | direktori lokal sementara untuk EXPORT (otomatis masuk allowed-directories); default <state-dir>/backup-staging |
 | `--classification-file` | `KARHUTLASQL_CLASSIFICATION_FILE` | — | classification YAML (tag kolom + mask, G-03); kosong = tanpa mask. Reload: SIGHUP |
 | `--config` | `KARHUTLASQL_CONFIG` | — | file konfigurasi YAML (prioritas: flag > env > file) |
 | `--database-filename` | `KARHUTLASQL_DATABASE_FILENAME` | — | file .duckdb; kosong = in-memory |
@@ -40,6 +45,8 @@ flag `*-file` menunjuk file (kunci privat wajib 0600).
 | `--mcp-port` | `KARHUTLASQL_MCP_PORT` | `0` | port server MCP Streamable HTTP (/mcp, Bearer token; TLS mengikuti gRPC) untuk agen AI; 0 = mati |
 | `--mcp-resource-url` | `KARHUTLASQL_MCP_RESOURCE_URL` | — | URL publik endpoint MCP (mis. https://kq.bank.local:8443/mcp) untuk metadata OAuth RFC 9728; kosong = tanpa metadata |
 | `--metrics-port` | `KARHUTLASQL_METRICS_PORT` | `9090` | port HTTP admin (/healthz); 0 = mati |
+| `--migrations-catalog` | `KARHUTLASQL_MIGRATIONS_CATALOG` | — | catalog tabel pelacak karhutla_schema_migrations; kosong = catalog default |
+| `--migrations-dir` | `KARHUTLASQL_MIGRATIONS_DIR` | — | direktori schema migration <versi>_<nama>.sql yang diterapkan saat start (sekali, berurutan, transaksi per file) |
 | `--mtls-ca` | `KARHUTLASQL_MTLS_CA` | — | CA PEM untuk verifikasi client cert (mTLS wajib bila diset) |
 | `--oidc-audience` | `KARHUTLASQL_OIDC_AUDIENCE` | `karhutlasql` | nilai wajib di claim aud token OIDC |
 | `--oidc-groups-claim` | `KARHUTLASQL_OIDC_GROUPS_CLAIM` | `groups` | claim grup OIDC |
@@ -59,6 +66,7 @@ flag `*-file` menunjuk file (kunci privat wajib 0600).
 | `--rate-burst` | `KARHUTLASQL_RATE_BURST` | `20` | burst token bucket rate limit |
 | `--rate-limit` | `KARHUTLASQL_RATE_LIMIT` | `0` | request RPC per detik per user (token bucket); 0 = mati |
 | `--report-signing-key-file` | `KARHUTLASQL_REPORT_SIGNING_KEY_FILE` | — | kunci privat Ed25519 PKCS#8 PEM (0600) penanda tangan manifest report |
+| `--report-signing-vault-key` | `KARHUTLASQL_REPORT_SIGNING_VAULT_KEY` | — | kunci Ed25519 di Vault Transit <mount>/<nama> (menggantikan --report-signing-key-file; env VAULT_ADDR, VAULT_TOKEN, VAULT_NAMESPACE, VAULT_CACERT) |
 | `--reports-file` | `KARHUTLASQL_REPORTS_FILE` | — | definisi report (reports.yaml) untuk karhutla_report_run() |
 | `--result-cache-max-bytes` | `KARHUTLASQL_RESULT_CACHE_MAX_BYTES` | `268435456` | batas total byte result cache (LRU) |
 | `--result-cache-max-entry-bytes` | `KARHUTLASQL_RESULT_CACHE_MAX_ENTRY_BYTES` | `20971520` | hasil lebih besar dari ini tidak di-cache |
@@ -75,4 +83,5 @@ flag `*-file` menunjuk file (kunci privat wajib 0600).
 | `--uc-sync-interval` | `KARHUTLASQL_UC_SYNC_INTERVAL` | `15m0s` | interval sinkron penuh ke Unity Catalog |
 | `--uc-token-env` | `KARHUTLASQL_UC_TOKEN_ENV` | `KARHUTLASQL_UC_TOKEN` | nama env var bearer token Unity Catalog (opsional) |
 | `--username` | `KARHUTLASQL_USERNAME` | — | user lokal (wajib) |
+| `--vault-token-file` | `KARHUTLASQL_VAULT_TOKEN_FILE` | — | file token Vault (mis. sink Vault Agent, 0600; dibaca ulang tiap tanda tangan); kosong = env VAULT_TOKEN |
 | `--verified-queries-file` | `KARHUTLASQL_VERIFIED_QUERIES_FILE` | — | YAML verified queries + semantic model (karhutla_verified_queries(), resource MCP) |

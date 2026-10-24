@@ -43,7 +43,6 @@ import (
 	"github.com/bankmega/karhutlasql/internal/scheduler"
 	"github.com/bankmega/karhutlasql/internal/session"
 	"github.com/bankmega/karhutlasql/internal/sqlext"
-	"github.com/bankmega/karhutlasql/internal/version"
 )
 
 // tracer span statement (no-op bila OpenTelemetry tidak dikonfigurasi).
@@ -129,14 +128,7 @@ func New(eng engine.Engine, log *slog.Logger, opts Options) (*Server, error) {
 	}
 	s := &Server{eng: eng, log: log, opts: opts}
 	s.Alloc = memory.DefaultAllocator
-	for id, v := range map[fsql.SqlInfo]any{
-		fsql.SqlInfoFlightSqlServerName:     "KarhutlaSQL",
-		fsql.SqlInfoFlightSqlServerVersion:  version.Version,
-		fsql.SqlInfoFlightSqlServerReadOnly: false,
-		fsql.SqlInfoFlightSqlServerSql:      true,
-		fsql.SqlInfoQuotedIdentifierCase:    int32(fsql.SqlCaseSensitivityCaseInsensitive),
-		fsql.SqlInfoIdentifierQuoteChar:     `"`,
-	} {
+	for id, v := range sqlInfo(eng, opts.QueryTimeout) {
 		if err := s.RegisterSqlInfo(id, v); err != nil {
 			return nil, fmt.Errorf("flightsql.New: %w", err)
 		}
@@ -263,6 +255,29 @@ func (s *Server) DoPutPreparedStatementQuery(ctx context.Context, cmd fsql.Prepa
 	return cmd.GetPreparedStatementHandle(), nil
 }
 
+// PollFlightInfoStatement Flight PollFlightInfo (eksekusi inkremental ADBC):
+// eksekusi KarhutlaSQL terjadi di DoGet dengan hasil di-stream, jadi poll
+// pertama langsung selesai (progress 1, tanpa descriptor lanjutan) dan
+// tiketnya sama dengan GetFlightInfo.
+func (s *Server) PollFlightInfoStatement(ctx context.Context, cmd fsql.StatementQuery, desc *flight.FlightDescriptor) (*flight.PollInfo, error) {
+	info, err := s.GetFlightInfoStatement(ctx, cmd, desc)
+	return done(info), err
+}
+
+// PollFlightInfoPreparedStatement lihat PollFlightInfoStatement.
+func (s *Server) PollFlightInfoPreparedStatement(ctx context.Context, cmd fsql.PreparedStatementQuery, desc *flight.FlightDescriptor) (*flight.PollInfo, error) {
+	info, err := s.GetFlightInfoPreparedStatement(ctx, cmd, desc)
+	return done(info), err
+}
+
+func done(info *flight.FlightInfo) *flight.PollInfo {
+	if info == nil {
+		return nil
+	}
+	p := 1.0
+	return &flight.PollInfo{Info: info, Progress: &p}
+}
+
 func (s *Server) GetFlightInfoPreparedStatement(ctx context.Context, cmd fsql.PreparedStatementQuery, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
 	if _, err := getPrepared(ctx, cmd.GetPreparedStatementHandle()); err != nil {
 		return nil, err
@@ -307,6 +322,11 @@ func (s *Server) DoPutPreparedStatementUpdate(ctx context.Context, cmd fsql.Prep
 var ddlKinds = []string{"CREATE", "DROP", "ALTER", "ATTACH", "DETACH"}
 
 func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, plan, func(rows, bytes int64, err error), error) {
+	return s.beginWith(ctx, kind, sql, func(ctx context.Context) (plan, error) { return s.authorize(ctx, sql) })
+}
+
+// beginWith seperti begin dengan otorisasi az (mis. bulk ingest tanpa SQL).
+func (s *Server) beginWith(ctx context.Context, kind, sql string, az func(context.Context) (plan, error)) (context.Context, plan, func(rows, bytes int64, err error), error) {
 	ss, err := sess(ctx)
 	if err != nil {
 		return nil, plan{}, nil, err
@@ -400,7 +420,7 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 		}
 	}
 	actx, aspan := tracer.Start(qctx, "authorize")
-	pl, err = s.authorize(actx, sql)
+	pl, err = az(actx)
 	aspan.End()
 	if err != nil {
 		end(0, 0, err)

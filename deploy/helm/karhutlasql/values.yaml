@@ -46,6 +46,14 @@ archive:
 reports: ""
 reportSigning:
   existingSecret: ""
+  # Alternatif kunci di Vault Transit/HSM (Fase 8d): <mount>/<nama>; env
+  # VAULT_ADDR dll. dan token (Vault Agent) lewat extraEnv/extraArgs.
+  vaultKey: ""
+
+# Backup bertingkat ke arsip (Fase 8d); "0" = hanya DoAction backup.
+backup:
+  interval: "0"
+  retention: { daily: 168h, weekly: 840h, monthly: 9600h }
 
 # DQ gate report run (Q-05): validasi GX tiap tabel sumber harus lebih muda
 # dari ini dan pada data yang sama; "0" = gate mati.

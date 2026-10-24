@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/x509"
@@ -152,10 +153,12 @@ func WriteParquet(rdr array.RecordReader) ([]byte, int64, error) {
 	return out.Bytes(), rows, nil
 }
 
-// Signer kunci tanda tangan manifest.
+// Signer penanda tangan Ed25519 manifest (report, backup): kunci di file
+// (LoadSigner) atau di Vault Transit/HSM (NewVaultSigner) — kunci privat
+// tidak pernah dimuat ke server untuk yang kedua.
 type Signer struct {
-	priv  ed25519.PrivateKey
 	KeyID string
+	sign  func(ctx context.Context, msg []byte) ([]byte, error)
 }
 
 // LoadSigner membaca kunci privat Ed25519 PKCS#8 PEM.
@@ -176,19 +179,29 @@ func LoadSigner(path string) (*Signer, error) {
 	if !ok {
 		return nil, fmt.Errorf("report.LoadSigner: key is %T, want Ed25519", k)
 	}
-	return &Signer{priv: priv, KeyID: KeyID(priv.Public().(ed25519.PublicKey))}, nil //nolint:forcetypeassert // Public() Ed25519
+	return &Signer{KeyID: KeyID(priv.Public().(ed25519.PublicKey)), //nolint:forcetypeassert // Public() Ed25519
+		sign: func(_ context.Context, msg []byte) ([]byte, error) { return ed25519.Sign(priv, msg), nil }}, nil
 }
 
 // Sign menyerialisasi m (dengan KeyID) dan menandatanganinya; mengembalikan
 // isi manifest.json dan manifest.json.sig (base64).
-func (s *Signer) Sign(m Manifest) ([]byte, []byte, error) {
+func (s *Signer) Sign(ctx context.Context, m Manifest) ([]byte, []byte, error) {
 	m.KeyID = s.KeyID
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return nil, nil, fmt.Errorf("report.Sign: %w", err)
 	}
-	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(s.priv, b))
-	return b, []byte(sig + "\n"), nil
+	sig, err := s.SignBytes(ctx, b)
+	return b, sig, err
+}
+
+// SignBytes tanda tangan Ed25519 atas b dalam format file .sig (base64 + "\n").
+func (s *Signer) SignBytes(ctx context.Context, b []byte) ([]byte, error) {
+	raw, err := s.sign(ctx, b)
+	if err != nil {
+		return nil, fmt.Errorf("report.Sign: %w", err)
+	}
+	return []byte(base64.StdEncoding.EncodeToString(raw) + "\n"), nil
 }
 
 // KeyID sidik kunci publik: 16 hex pertama sha256(DER PKIX).

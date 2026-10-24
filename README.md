@@ -17,7 +17,7 @@ Server SQL analitik ringan: **Apache Arrow Flight SQL** di atas **DuckDB**, ditu
 | Operasional | Session registry, kill session, resource group & statement queuing, rate limit, query timeout, admin via Flight DoAction |
 | Observabilitas | Prometheus `/metrics` + `karhutla_metrics()`, `karhutla_query_history()`, slow-query log, audit log JSON |
 | Agen AI | Server MCP (stdio + Streamable HTTP/OAuth) dengan profil `ai_sandbox` dipaksakan, verified queries + semantic model |
-| Roadmap v2 | Bulk ingest `DoPut`, `PollFlightInfo`, backup bertingkat, Vault/HSM |
+| Operasi | Bulk ingest (`adbc_ingest`), backup bertingkat ke arsip WORM, schema migration berversi, kunci tanda tangan di Vault/HSM |
 
 ## Quick start
 

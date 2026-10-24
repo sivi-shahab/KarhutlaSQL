@@ -1,6 +1,7 @@
 package report
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -45,7 +46,7 @@ func TestSignVerify(t *testing.T) {
 	if err != nil || rows != 3 {
 		t.Fatal(rows, err)
 	}
-	m, sig, err := s.Sign(Manifest{ReportID: "r1", Name: "slik", Result: Result{File: "result.parquet", SHA256: SHA256(result), Rows: rows}})
+	m, sig, err := s.Sign(context.Background(), Manifest{ReportID: "r1", Name: "slik", Result: Result{File: "result.parquet", SHA256: SHA256(result), Rows: rows}})
 	if err != nil {
 		t.Fatal(err)
 	}

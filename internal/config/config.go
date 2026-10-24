@@ -70,6 +70,17 @@ type Config struct {
 	ResultCacheTTL           time.Duration
 	ResultCacheMaxBytes      int64
 	ResultCacheMaxEntryBytes int64
+	// Backup bertingkat (Fase 8d): interval 0 = hanya lewat DoAction backup.
+	BackupInterval                              time.Duration
+	BackupStagingDir                            string
+	BackupRetentionDaily, BackupRetentionWeekly time.Duration
+	BackupRetentionMonthly                      time.Duration
+	// Kunci tanda tangan di Vault Transit (Fase 8d).
+	ReportSigningVaultKey string
+	VaultTokenFile        string
+	// Schema migration (Fase 8d): dir kosong = mati.
+	MigrationsDir     string
+	MigrationsCatalog string
 	// MCP (Fase 8c): port 0 = mati.
 	MCPPort             int
 	MCPResourceURL      string
@@ -154,6 +165,15 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.Duration("result-cache-ttl", 0, "umur hasil SELECT di result cache (per identitas, invalidasi saat data berubah); 0 = mati")
 	fs.Int64("result-cache-max-bytes", 256<<20, "batas total byte result cache (LRU)")
 	fs.Int64("result-cache-max-entry-bytes", 20<<20, "hasil lebih besar dari ini tidak di-cache")
+	fs.Duration("backup-interval", 0, "interval backup terjadwal ke arsip (EXPORT DATABASE catalog DuckDB + snapshot DuckLake); 0 = hanya DoAction backup")
+	fs.String("backup-staging-dir", "", "direktori lokal sementara untuk EXPORT (otomatis masuk allowed-directories); default <state-dir>/backup-staging")
+	fs.Duration("backup-retention-daily", 7*24*time.Hour, "retensi object-lock backup harian")
+	fs.Duration("backup-retention-weekly", 35*24*time.Hour, "retensi object-lock backup mingguan (Minggu UTC)")
+	fs.Duration("backup-retention-monthly", 400*24*time.Hour, "retensi object-lock backup bulanan (tanggal 1 UTC)")
+	fs.String("report-signing-vault-key", "", "kunci Ed25519 di Vault Transit <mount>/<nama> (menggantikan --report-signing-key-file; env VAULT_ADDR, VAULT_TOKEN, VAULT_NAMESPACE, VAULT_CACERT)")
+	fs.String("vault-token-file", "", "file token Vault (mis. sink Vault Agent, 0600; dibaca ulang tiap tanda tangan); kosong = env VAULT_TOKEN")
+	fs.String("migrations-dir", "", "direktori schema migration <versi>_<nama>.sql yang diterapkan saat start (sekali, berurutan, transaksi per file)")
+	fs.String("migrations-catalog", "", "catalog tabel pelacak karhutla_schema_migrations; kosong = catalog default")
 	fs.Int("mcp-port", 0, "port server MCP Streamable HTTP (/mcp, Bearer token; TLS mengikuti gRPC) untuk agen AI; 0 = mati")
 	fs.String("mcp-resource-url", "", "URL publik endpoint MCP (mis. https://kq.bank.local:8443/mcp) untuk metadata OAuth RFC 9728; kosong = tanpa metadata")
 	fs.Int("mcp-max-rows", 500, "batas baris per hasil tool MCP (di atas batas profil ai_sandbox)")
@@ -241,6 +261,15 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		ResultCacheTTL:           v.GetDuration("result-cache-ttl"),
 		ResultCacheMaxBytes:      v.GetInt64("result-cache-max-bytes"),
 		ResultCacheMaxEntryBytes: v.GetInt64("result-cache-max-entry-bytes"),
+		BackupInterval:           v.GetDuration("backup-interval"),
+		BackupStagingDir:         v.GetString("backup-staging-dir"),
+		BackupRetentionDaily:     v.GetDuration("backup-retention-daily"),
+		BackupRetentionWeekly:    v.GetDuration("backup-retention-weekly"),
+		BackupRetentionMonthly:   v.GetDuration("backup-retention-monthly"),
+		ReportSigningVaultKey:    v.GetString("report-signing-vault-key"),
+		VaultTokenFile:           v.GetString("vault-token-file"),
+		MigrationsDir:            v.GetString("migrations-dir"),
+		MigrationsCatalog:        v.GetString("migrations-catalog"),
 		MCPPort:                  v.GetInt("mcp-port"),
 		MCPResourceURL:           v.GetString("mcp-resource-url"),
 		MCPMaxRows:               v.GetInt("mcp-max-rows"),
@@ -267,6 +296,9 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 	}
 	if c.StateDir == "" && c.DatabaseFilename != "" {
 		c.StateDir = filepath.Join(filepath.Dir(c.DatabaseFilename), "karhutlasql-state")
+	}
+	if c.BackupStagingDir == "" && c.StateDir != "" {
+		c.BackupStagingDir = filepath.Join(c.StateDir, "backup-staging")
 	}
 	if err := c.validate(); err != nil {
 		return Config{}, fmt.Errorf("config.Load: %w", err)
@@ -311,6 +343,12 @@ func (c Config) validate() error {
 	}
 	if c.ArchiveRetention <= 0 || c.AccessLogFlushInterval <= 0 {
 		errs = append(errs, errors.New("archive-retention and access-log-flush-interval must be > 0"))
+	}
+	if c.BackupInterval < 0 || c.BackupRetentionDaily <= 0 || c.BackupRetentionWeekly <= 0 || c.BackupRetentionMonthly <= 0 {
+		errs = append(errs, errors.New("backup-interval must be >= 0 and backup-retention-* > 0"))
+	}
+	if c.ReportSigningVaultKey != "" && c.ReportSigningKeyFile != "" {
+		errs = append(errs, errors.New("report-signing-vault-key and report-signing-key-file are mutually exclusive"))
 	}
 	if c.MCPPort < 0 || c.MCPPort > 65535 || c.MCPMaxRows <= 0 {
 		errs = append(errs, errors.New("mcp-port must be 0..65535 and mcp-max-rows > 0"))

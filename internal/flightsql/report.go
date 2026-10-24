@@ -182,7 +182,7 @@ func (s *Server) runReport(ctx context.Context, def report.Def, m *report.Manife
 	m.ExecSHA256 = report.SHA256([]byte(pl.sql))
 	m.Result = report.Result{File: "result.parquet", Format: "parquet", SHA256: report.SHA256(data), Rows: rows, Bytes: int64(len(data))}
 	m.FinishedAt = time.Now().UTC()
-	manifest, sig, err := s.opts.Signer.Sign(*m)
+	manifest, sig, err := s.opts.Signer.Sign(ctx, *m)
 	if err != nil {
 		return ReportRun{}, err
 	}

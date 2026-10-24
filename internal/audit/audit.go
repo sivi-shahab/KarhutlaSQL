@@ -35,6 +35,9 @@ const (
 	CatalogSync = "catalog_sync"
 	// Hak akses subjek data (Fase 8b): Object = hash subject_id.
 	PIIAccessQuery = "pii_access_query"
+	// Backup & migration (Fase 8d).
+	SchemaMigration = "schema_migration"
+	Backup          = "backup"
 )
 
 // Event satu baris audit (JSON). Field kosong dihilangkan.

@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,7 +18,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,6 +35,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.yaml.in/yaml/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"google.golang.org/grpc/test/bufconn"
 
@@ -42,6 +48,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/auth/local"
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
 	"github.com/bankmega/karhutlasql/internal/authz"
+	"github.com/bankmega/karhutlasql/internal/backup"
 	"github.com/bankmega/karhutlasql/internal/cache"
 	"github.com/bankmega/karhutlasql/internal/catalogsync"
 	"github.com/bankmega/karhutlasql/internal/classification"
@@ -53,6 +60,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/interceptor"
 	"github.com/bankmega/karhutlasql/internal/mcp"
 	"github.com/bankmega/karhutlasql/internal/metrics"
+	"github.com/bankmega/karhutlasql/internal/migrate"
 	"github.com/bankmega/karhutlasql/internal/objstore"
 	"github.com/bankmega/karhutlasql/internal/quota"
 	"github.com/bankmega/karhutlasql/internal/report"
@@ -196,11 +204,18 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	if dqStore != nil {
 		m.Registry.MustRegister(dqStore)
 	}
+	allowed := cfg.AllowedDirectories
+	if archive != nil && cfg.BackupStagingDir != "" { // EXPORT DATABASE butuh direktori lokal yang diizinkan guardrail
+		if err := os.MkdirAll(cfg.BackupStagingDir, 0o700); err != nil {
+			return fmt.Errorf("main.serve: backup staging: %w", err)
+		}
+		allowed = append(slices.Clone(allowed), strings.TrimSuffix(cfg.BackupStagingDir, "/")+"/")
+	}
 	vset, err := verified.Load(cfg.VerifiedQueriesFile)
 	if err != nil {
 		return err
 	}
-	reports, signer, err := newReports(cfg, log)
+	reports, signer, err := newReports(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
@@ -210,7 +225,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		return err
 	}
 	eng, err := duckdb.Open(ctx, duckdb.Config{Path: cfg.DatabaseFilename, InitSQL: initSQL,
-		AllowedDirectories: cfg.AllowedDirectories, Secrets: secrets, StreamingBufferSize: streamingBuffer(cfg.StreamingBufferSize),
+		AllowedDirectories: allowed, Secrets: secrets, StreamingBufferSize: streamingBuffer(cfg.StreamingBufferSize),
 		Setup: func(ctx context.Context, conn *sql.Conn) error {
 			return sqlext.Register(ctx, conn, sqlext.Deps{Quota: quotas, Verified: vset, Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, AccessLog: access, MaskKey: maskKey, DQ: dqStore,
 				RunReport: func(ctx context.Context, name, asOf string) ([]any, error) { return srv.ReportRow(ctx, name, asOf) }})
@@ -232,12 +247,15 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 			return fmt.Errorf("main.serve: verified query %s must be a single valid SELECT: %w", q.Name, err)
 		}
 	}
+	if err := runMigrations(ctx, cfg, eng, auditLog, log); err != nil {
+		return err
+	}
 	var resultCache *cache.Cache
 	if cfg.ResultCacheTTL > 0 {
 		resultCache = cache.New(cfg.ResultCacheTTL, cfg.ResultCacheMaxBytes, cfg.ResultCacheMaxEntryBytes)
 		m.Registry.MustRegister(resultCache)
 	}
-	srv, err = flightsql.New(eng, log, flightsql.Options{
+	srv, err = flightsql.New(eng, log, flightsql.Options{ //nolint:contextcheck // metadata GetSqlInfo dibaca sekali saat start
 		QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m, Policy: policy, Classification: cls,
 		Scheduler: sched, DefaultGroup: scheduler.Group{MaxConcurrent: cfg.MaxConcurrent, QueueSize: cfg.QueueSize, QueueTimeout: cfg.QueueTimeout},
 		History: history, SlowQuery: cfg.SlowQueryThreshold, Profiling: cfg.QueryProfiling, AccessLog: access,
@@ -254,6 +272,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}, auditLog)
 		m.Registry.MustRegister(syncer.Errors())
 	}
+	runBackup := newBackup(cfg, eng, archive, signer, auditLog, log)
 	health := healthCheck(eng, cfg.HealthCheckQuery)
 	ai := interceptor.NewAuth(interceptor.AuthOptions{Local: authn, OIDC: oidcVerifier, Policy: policy, Audit: auditLog, Metrics: m, Log: log})
 	si := interceptor.NewSession(sessions, auditLog, m)
@@ -311,7 +330,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		Stream:  []grpc.StreamServerInterceptor{ai.Stream(), rl.Stream(), si.Stream()},
 		Health:  health,
 		Drain:   server.DrainTimeout,
-		Actions: actions(adminOpts, srv),
+		Actions: actions(adminOpts, srv, runBackup),
 		Tracing: cfg.OTelEndpoint != "",
 	}
 	go func() {
@@ -329,6 +348,20 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		go func() { errc <- admin.Serve(ctx, mcpLis, h, log); cancel() }()
 	}
 	go sessions.Run(ctx, time.Minute)
+	if cfg.BackupInterval > 0 && archive != nil {
+		go func() {
+			t := time.NewTicker(cfg.BackupInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					_, _ = runBackup(ctx, "scheduler") // hasil & error dicatat di audit/log
+				}
+			}
+		}()
+	}
 	accessDone := make(chan struct{})
 	if access != nil {
 		go func() {
@@ -395,11 +428,88 @@ func newMCP(ctx context.Context, cfg config.Config, srv *flightsql.Server, gopts
 	return h, nil
 }
 
+// newBackup fungsi backup (DoAction & jadwal): manifest JSON; setiap run
+// dicatat di audit. Tanpa arsip → FAILED_PRECONDITION.
+func newBackup(cfg config.Config, eng engine.Engine, archive objstore.Store, signer *report.Signer, a *audit.Logger,
+	log *slog.Logger) func(context.Context, string) ([]byte, error) {
+	var mu sync.Mutex // satu backup pada satu waktu
+	return func(ctx context.Context, by string) ([]byte, error) {
+		fp, ok := archive.(objstore.FilePutter)
+		if !ok {
+			return nil, status.Error(codes.FailedPrecondition, "backup requires an archive (--archive-dir / --archive-s3-*)")
+		}
+		if !mu.TryLock() {
+			return nil, status.Error(codes.FailedPrecondition, "a backup is already running")
+		}
+		defer mu.Unlock()
+		m, err := backup.Options{Engine: eng, Store: fp, StagingDir: cfg.BackupStagingDir, Signer: signer,
+			Tiers: backup.Tiers{Daily: cfg.BackupRetentionDaily, Weekly: cfg.BackupRetentionWeekly, Monthly: cfg.BackupRetentionMonthly}}.Run(ctx)
+		ev := audit.Event{Type: audit.Backup, User: by, Object: m.Prefix, Detail: m.Tier, Status: "OK", Rows: int64(len(m.Files))}
+		if err != nil {
+			ev.Status, ev.Error = "FAILED", err.Error()
+			a.Emit(ctx, ev)
+			log.Error("backup failed", "err", err, "prefix", m.Prefix)
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		a.Emit(ctx, ev)
+		log.Info("backup", "prefix", m.Prefix, "tier", m.Tier, "files", len(m.Files), "catalogs", m.Catalogs)
+		b, _ := json.Marshal(m) // struct sederhana: tidak pernah error
+		return b, nil
+	}
+}
+
+// runMigrations menerapkan --migrations-dir sebelum server menerima koneksi.
+func runMigrations(ctx context.Context, cfg config.Config, eng engine.Engine, a *audit.Logger, log *slog.Logger) error {
+	if cfg.MigrationsDir == "" {
+		return nil
+	}
+	files, err := migrate.Load(cfg.MigrationsDir)
+	if err != nil {
+		return err
+	}
+	cat := cfg.MigrationsCatalog
+	if cat == "" {
+		an, err := eng.Analyze(ctx, "SELECT 1")
+		if err != nil {
+			return fmt.Errorf("main.runMigrations: %w", err)
+		}
+		cat = an.DefaultCatalog
+	}
+	host, _ := os.Hostname()
+	done, err := migrate.Apply(ctx, eng, cat, "karhutlasql "+version.Version+"@"+host, files)
+	for _, f := range done {
+		a.Emit(ctx, audit.Event{Type: audit.SchemaMigration, Status: "OK", Object: fmt.Sprintf("%d_%s", f.Version, f.Name), Hash: f.SHA256})
+	}
+	if err != nil {
+		a.Emit(ctx, audit.Event{Type: audit.SchemaMigration, Status: "FAILED", Error: err.Error()})
+		return err
+	}
+	log.Info("schema migrations", "catalog", cat, "applied", len(done), "total", len(files))
+	return nil
+}
+
 // newReports definisi report dan kunci tanda tangan (file 0600).
-func newReports(cfg config.Config, log *slog.Logger) (map[string]report.Def, *report.Signer, error) {
+func newReports(ctx context.Context, cfg config.Config, log *slog.Logger) (map[string]report.Def, *report.Signer, error) {
 	defs, err := report.Load(cfg.ReportsFile)
-	if err != nil || cfg.ReportSigningKeyFile == "" {
-		return defs, nil, err
+	if err != nil {
+		return nil, nil, err
+	}
+	if cfg.ReportSigningVaultKey != "" {
+		if cfg.VaultTokenFile != "" {
+			if err := server.CheckSecretFile(cfg.VaultTokenFile); err != nil {
+				return nil, nil, fmt.Errorf("main.newReports: %w", err)
+			}
+		}
+		s, err := report.NewVaultSigner(ctx, report.VaultConfig{Addr: os.Getenv("VAULT_ADDR"), Key: cfg.ReportSigningVaultKey,
+			Token: os.Getenv("VAULT_TOKEN"), TokenFile: cfg.VaultTokenFile, Namespace: os.Getenv("VAULT_NAMESPACE"), CAFile: os.Getenv("VAULT_CACERT")})
+		if err != nil {
+			return nil, nil, err
+		}
+		log.Info("report signing key (vault transit)", "key", cfg.ReportSigningVaultKey, "key_id", s.KeyID, "reports", len(defs))
+		return defs, s, nil
+	}
+	if cfg.ReportSigningKeyFile == "" {
+		return defs, nil, nil
 	}
 	if err := server.CheckSecretFile(cfg.ReportSigningKeyFile); err != nil {
 		return nil, nil, fmt.Errorf("main.newReports: %w", err)
@@ -555,7 +665,10 @@ func advertisedEndpoint(cfg config.Config, tls bool) string {
 
 // actions DoAction tambahan: admin (G-12) di atas operasi admin HTTP, dan
 // runner GX (Q-03).
-func actions(o admin.Options, srv *flightsql.Server) map[string]func(context.Context, []byte) ([]byte, error) {
+// ActionBackup DoAction admin: backup sekarang → manifest JSON.
+const ActionBackup = "backup"
+
+func actions(o admin.Options, srv *flightsql.Server, backup func(context.Context, string) ([]byte, error)) map[string]func(context.Context, []byte) ([]byte, error) {
 	out := map[string]func(context.Context, []byte) ([]byte, error){}
 	for _, typ := range admin.Actions {
 		out[typ] = func(ctx context.Context, body []byte) ([]byte, error) { return o.Do(ctx, typ, body) }
@@ -564,6 +677,13 @@ func actions(o admin.Options, srv *flightsql.Server) map[string]func(context.Con
 		out[typ] = func(ctx context.Context, body []byte) ([]byte, error) { return srv.DQAction(ctx, typ, body) }
 	}
 	out[flightsql.ActionPIIAccess] = srv.PIIAccessAction
+	out[ActionBackup] = func(ctx context.Context, _ []byte) ([]byte, error) {
+		id, _ := auth.FromContext(ctx)
+		if !id.HasRole(auth.RoleAdmin) {
+			return nil, status.Errorf(codes.PermissionDenied, "action %s requires role %s", ActionBackup, auth.RoleAdmin)
+		}
+		return backup(ctx, id.Source+":"+id.Subject)
+	}
 	return out
 }
 

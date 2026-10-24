@@ -20,6 +20,7 @@ nav:
   - Report run: reports.md
   - DuckLake multi-writer: ducklake.md
   - Server MCP (agen AI): mcp.md
+  - Backup, migration & kunci: operations.md
   - Data quality: data-quality.md
   - Unity Catalog: catalog.md
   - Kubernetes: deploy-k8s.md

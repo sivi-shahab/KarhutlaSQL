@@ -29,7 +29,7 @@ func TestVerifyReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := []byte("PAR1 fake result")
-	m, sig, _ := s.Sign(report.Manifest{ReportID: "r1", Name: "slik_bulanan", Result: report.Result{File: "result.parquet", SHA256: report.SHA256(result), Rows: 7}})
+	m, sig, _ := s.Sign(context.Background(), report.Manifest{ReportID: "r1", Name: "slik_bulanan", Result: report.Result{File: "result.parquet", SHA256: report.SHA256(result), Rows: 7}})
 	_ = os.WriteFile(filepath.Join(dir, "manifest.json"), m, 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "manifest.json.sig"), sig, 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "result.parquet"), result, 0o600)

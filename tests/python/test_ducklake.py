@@ -131,3 +131,15 @@ def test_multi_writer_and_time_travel_report(lake_servers, minio, tmp_path):
     ok = subprocess.run([str(CLIENT), "--verify", str(tmp_path / "manifest.json"), "--public-key", str(pub)],
                         capture_output=True, text=True)
     assert ok.returncode == 0, ok.stderr
+
+
+def test_backup_records_lake_snapshot(lake_servers):
+    import pyarrow.flight as fl
+
+    from conftest import PASSWORD, USER
+
+    (a, _), _ = lake_servers
+    client = fl.FlightClient(a["uri"])
+    opts = fl.FlightCallOptions(headers=[client.authenticate_basic_token(USER, PASSWORD)])
+    m = json.loads(list(client.do_action(fl.Action("backup", b""), options=opts))[0].body.to_pybytes())
+    assert m["lake_snapshots"]["lake"] == q(a, "SELECT id FROM lake.current_snapshot()")[0][0]

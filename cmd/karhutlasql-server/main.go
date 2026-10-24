@@ -189,7 +189,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		return err
 	}
 	eng, err := duckdb.Open(ctx, duckdb.Config{Path: cfg.DatabaseFilename, InitSQL: initSQL,
-		AllowedDirectories: cfg.AllowedDirectories, Secrets: secrets,
+		AllowedDirectories: cfg.AllowedDirectories, Secrets: secrets, StreamingBufferSize: streamingBuffer(cfg.StreamingBufferSize),
 		Setup: func(ctx context.Context, conn *sql.Conn) error {
 			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, AccessLog: access, MaskKey: maskKey, DQ: dqStore,
 				RunReport: func(ctx context.Context, name string) ([]any, error) { return srv.ReportRow(ctx, name) }})
@@ -198,6 +198,9 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		return err
 	}
 	defer func() { err = errors.Join(err, eng.Close()) }()
+	if err := eng.Streaming(); err != nil && cfg.StreamingBufferSize != "0" {
+		log.Warn("result streaming unavailable; results are materialized before the first batch", "reason", err)
+	}
 
 	srv, err = flightsql.New(eng, log, flightsql.Options{
 		QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m, Policy: policy, Classification: cls,
@@ -401,6 +404,14 @@ func newClassification(cfg config.Config, gate *approval.Gate) (*classification.
 	err := gate.Open(approval.Doc{Name: "classification", Path: cfg.ClassificationFile,
 		Prepare: func(b []byte) (func(), error) { return cls.Prepare(b, check) }})
 	return cls, key, err
+}
+
+// streamingBuffer "0" → kosong (materialisasi).
+func streamingBuffer(s string) string {
+	if s == "0" {
+		return ""
+	}
+	return s
 }
 
 // advertisedEndpoint nilai karhutla.endpoint di Unity Catalog (K-02).

@@ -16,9 +16,14 @@ import (
 
 func open(t *testing.T, initSQL string) *Engine {
 	t.Helper()
-	e, err := Open(context.Background(), Config{InitSQL: initSQL, Unlocked: true}) // analisis fungsi file; guardrail: TestGuardrail
+	// Unlocked: analisis fungsi file (guardrail: TestGuardrail). Streaming
+	// aktif seperti server; jalur materialisasi: TestQuery_Materialized.
+	e, err := Open(context.Background(), Config{InitSQL: initSQL, Unlocked: true, StreamingBufferSize: "4MB"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := e.Streaming(); err != nil {
+		t.Fatalf("streaming inactive: %v", err)
 	}
 	t.Cleanup(func() { _ = e.Close() })
 	return e

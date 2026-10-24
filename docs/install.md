@@ -31,6 +31,10 @@ karhutlasql-server --username admin \
 - `SIGTERM` → drain sesi ≤ 30 detik lalu exit 0. `SIGHUP` → baca ulang
   policy & classification (dengan four-eyes: menjadi pending).
 
+Memori: hasil query di-stream ke klien; hasil yang belum dibaca klien
+dibatasi `--streaming-buffer-size` (default 64 MB per statement). Total
+memori DuckDB dibatasi setting `memory_limit` (init SQL, default 80% RAM).
+
 Checklist produksi: TLS (atau mTLS), `--oidc-issuer` + `--policy-file`,
 `--audit-log-dir`, arsip S3 ber-object-lock (`--archive-s3-*`) untuk
 access-history & report, `--allowed-directories`, `--four-eyes` (default

@@ -57,6 +57,7 @@ flag `*-file` menunjuk file (kunci privat wajib 0600).
 | `--session-idle-timeout` | `KARHUTLASQL_SESSION_IDLE_TIMEOUT` | `1h0m0s` | sesi tanpa aktivitas dibuang dari registry (statement/prepared handle-nya ikut hilang) |
 | `--slow-query-threshold` | `KARHUTLASQL_SLOW_QUERY_THRESHOLD` | `10s` | eksekusi (di luar antre) selama ini dicatat ke log slow_query; 0 = mati |
 | `--state-dir` | `KARHUTLASQL_STATE_DIR` | — | direktori state server (persetujuan policy, 0700); default <dir database>/karhutlasql-state |
+| `--streaming-buffer-size` | `KARHUTLASQL_STREAMING_BUFFER_SIZE` | `64MB` | buffer hasil streaming DuckDB per statement (batas memori hasil yang belum dibaca klien); 0 = materialisasi penuh (ADR 34) |
 | `--tls-cert` | `KARHUTLASQL_TLS_CERT` | — | sertifikat server PEM |
 | `--tls-key` | `KARHUTLASQL_TLS_KEY` | — | kunci server PEM (0600) |
 | `--tls-self-signed` | `KARHUTLASQL_TLS_SELF_SIGNED` | `false` | TLS dengan sertifikat self-signed di memori (dev/container; klien --tls-skip-verify) |

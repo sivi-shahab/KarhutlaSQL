@@ -8,7 +8,7 @@ Database dibuat dengan engine yang sama:
         --server bin/karhutlasql-server [--rounds 5]
 
 Tiap ronde menjalankan bergantian: DuckDB CLI (`.mode trash`, `.timer on`),
-server default, server `--query-profiling=false`; setiap query sekali
+server default (streaming), server `--streaming-buffer-size=0` (materialisasi); setiap query sekali
 pemanasan + sekali terukur. Hasil = median per query antar ronde, sehingga
 fluktuasi mesin (mis. VM/WSL berbagi CPU) mengenai semua konfigurasi secara
 setara. Server membuka file read-only. Waktu server = end-to-end di klien
@@ -29,7 +29,7 @@ import time
 import adbc_driver_flightsql.dbapi as flightsql
 
 LARGE = "SELECT * FROM lineitem WHERE l_shipdate < DATE '1993-01-01'"
-CONFIGS = {"server": [], "server --query-profiling=false": ["--query-profiling=false"]}
+CONFIGS = {"server": [], "server --streaming-buffer-size=0": ["--streaming-buffer-size=0"]}
 
 
 def cli_pass(duckdb, db, sqls):

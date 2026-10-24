@@ -50,6 +50,7 @@ type Config struct {
 	RateBurst                int
 	SlowQueryThreshold       time.Duration
 	QueryProfiling           bool
+	StreamingBufferSize      string // "0" = hasil dimaterialisasi
 
 	// Arsip governance (access-history, report): direktori lokal (dev) atau S3 WORM.
 	ArchiveDir                                   string
@@ -124,6 +125,7 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.Float64("rate-limit", 0, "request RPC per detik per user (token bucket); 0 = mati")
 	fs.Int("rate-burst", 20, "burst token bucket rate limit")
 	fs.Duration("slow-query-threshold", 10*time.Second, "eksekusi (di luar antre) selama ini dicatat ke log slow_query; 0 = mati")
+	fs.String("streaming-buffer-size", "64MB", "buffer hasil streaming DuckDB per statement (batas memori hasil yang belum dibaca klien); 0 = materialisasi penuh (ADR 34)")
 	fs.Bool("query-profiling", false, "profiling DuckDB per statement untuk peak memory & plan hash di karhutla_query_history() (mahal: +~13% waktu TPC-H SF10, ADR 33)")
 	fs.String("archive-dir", "", "arsip access-history & report di direktori lokal (dev; bukan WORM)")
 	fs.String("archive-s3-endpoint", "", "endpoint S3/MinIO arsip (host:port); bucket wajib object-lock")
@@ -200,6 +202,7 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		RateBurst:              v.GetInt("rate-burst"),
 		SlowQueryThreshold:     v.GetDuration("slow-query-threshold"),
 		QueryProfiling:         v.GetBool("query-profiling"),
+		StreamingBufferSize:    v.GetString("streaming-buffer-size"),
 		ArchiveDir:             v.GetString("archive-dir"),
 		ArchiveS3Endpoint:      v.GetString("archive-s3-endpoint"),
 		ArchiveS3Bucket:        v.GetString("archive-s3-bucket"),

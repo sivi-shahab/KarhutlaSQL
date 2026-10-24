@@ -42,6 +42,10 @@ type Config struct {
 	Secrets []Secret
 	// Unlocked mematikan guardrail (test engine saja).
 	Unlocked bool
+	// StreamingBufferSize batas memori buffer hasil streaming per statement
+	// (setting DuckDB streaming_buffer_size, mis. "64MB"); kosong = hasil
+	// dimaterialisasi lewat duckdb-go (ADR 17/34).
+	StreamingBufferSize string
 }
 
 // Secret satu TEMPORARY SECRET DuckDB.
@@ -56,17 +60,30 @@ type Secret struct {
 type Engine struct {
 	connector *duckdbdrv.Connector
 	closed    atomic.Bool
+	streamErr error // nil = SELECT tanpa parameter di-stream (stream.go)
 }
 
 var _ engine.Engine = (*Engine)(nil)
 
 // Open membuka database dan menjalankan InitSQL.
 func Open(ctx context.Context, cfg Config) (*Engine, error) {
-	c, err := duckdbdrv.NewConnector(cfg.Path, nil)
+	var initConn func(driver.ExecerContext) error
+	if cfg.StreamingBufferSize != "" {
+		initConn = setStreamingBuffer(cfg.StreamingBufferSize) //nolint:contextcheck // connInitFn duckdb-go tanpa ctx
+	}
+	c, err := duckdbdrv.NewConnector(cfg.Path, initConn)
 	if err != nil {
 		return nil, wrap("duckdb.Open", err)
 	}
-	e := &Engine{connector: c}
+	e := &Engine{connector: c, streamErr: errors.New("disabled")}
+	if cfg.StreamingBufferSize != "" {
+		dc, err := c.Connect(ctx)
+		if err != nil {
+			return nil, errors.Join(wrap("duckdb.Open", err), c.Close())
+		}
+		e.streamErr = probeStreaming(dc.(*duckdbdrv.Conn)) //nolint:forcetypeassert // connector duckdb-go
+		_ = dc.Close()
+	}
 	if cfg.Setup != nil {
 		if err := setup(ctx, c, cfg.Setup); err != nil {
 			return nil, errors.Join(fmt.Errorf("duckdb.Open: setup: %w", err), c.Close())
@@ -82,6 +99,20 @@ func Open(ctx context.Context, cfg Config) (*Engine, error) {
 	}
 	return e, nil
 }
+
+// setStreamingBuffer init koneksi: streaming_buffer_size tidak bisa global.
+// duckdb-go tidak meneruskan ctx ke init koneksi; SET ini instan.
+func setStreamingBuffer(size string) func(driver.ExecerContext) error {
+	set := "SET streaming_buffer_size = " + quoteLiteral(size)
+	return func(x driver.ExecerContext) error {
+		_, err := x.ExecContext(context.Background(), set, nil)
+		return err
+	}
+}
+
+// Streaming nil bila hasil SELECT di-stream; selain itu alasan jalur
+// materialisasi dipakai (dimatikan, atau struktur duckdb-go tidak dikenali).
+func (e *Engine) Streaming() error { return e.streamErr }
 
 // harden menginjeksi secret lalu mengunci akses eksternal (G-07).
 func (e *Engine) harden(ctx context.Context, cfg Config) error {
@@ -182,6 +213,16 @@ func (e *Engine) Query(ctx context.Context, query string, args ...any) (array.Re
 	st := engine.StatsFrom(ctx)
 	if err := enableProfiling(ctx, c, st); err != nil {
 		return nil, errors.Join(wrap("duckdb.Query", err), c.Close())
+	}
+	if e.streamErr == nil && len(args) == 0 {
+		rdr, err := stream(ctx, c, query)
+		switch {
+		case err == nil:
+			return &connReader{RecordReader: rdr, conn: c, st: st}, nil
+		case !errors.Is(err, errPrepare):
+			return nil, errors.Join(wrap("duckdb.Query", err), c.Close())
+		}
+		// prepare gagal / butuh parameter: jalur duckdb-go memberi error bertipe
 	}
 	ar, err := duckdbdrv.NewArrowFromConn(c)
 	if err != nil {

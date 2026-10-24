@@ -54,7 +54,7 @@ func TestFunctions(t *testing.T) {
 	c.WithLabelValues("v").Add(3)
 	h.Observe(0.5)
 
-	eng, err := duckdb.Open(ctx, duckdb.Config{Setup: func(ctx context.Context, conn *sql.Conn) error {
+	eng, err := duckdb.Open(ctx, duckdb.Config{StreamingBufferSize: "4MB", Setup: func(ctx context.Context, conn *sql.Conn) error {
 		return Register(ctx, conn, Deps{Sessions: reg, Gatherer: pr, Audit: audit.New(sink, false, nil)})
 	}})
 	if err != nil {

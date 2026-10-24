@@ -73,20 +73,21 @@ Kubernetes: lihat `deploy/helm/` dan [docs/deploy-k8s.md](docs/deploy-k8s.md).
 `tests/bench/tpch_bench.py`, 5 ronde bergantian, median per query; klien ADBC
 Python end-to-end vs DuckDB CLI 1.5.6 (`.mode trash`) pada file yang sama.
 Mesin dev: 16 vCPU, 15 GB RAM, WSL2 (CPU berbagi dengan host — angka absolut
-berfluktuasi, rasio antar konfigurasi stabil).
+berfluktuasi antar sesi, rasio dalam satu sesi stabil).
 
 | | Total 22 query | Overhead vs CLI |
 |---|---|---|
-| DuckDB CLI | 19,13 s | — |
-| karhutlasql-server (default, profiling mati) | 22,41 s | **+17,2%** |
-| karhutlasql-server `--query-profiling` | 24,84 s | +29,9% |
+| DuckDB CLI | 10,51 s | — |
+| karhutlasql-server (default: streaming, profiling mati) | 10,86 s | **+3,3%** |
+| karhutlasql-server `--streaming-buffer-size=0` (materialisasi) | 11,36 s | +8,1% |
+| `--query-profiling` (sesi terpisah) | — | +~13 poin persen |
 
-- Lapisan server sendiri (auth, authz, scheduler, Arrow/gRPC) ≈ +1%; sisanya
-  jalur eksekusi duckdb-go yang memmaterialisasi hasil (ADR 17, ADR 33).
-  Target spec < 5% **belum tercapai**.
-- Hasil besar (7,6 juta baris `lineitem`): CLI 2,3 s; server 17,7 s, batch
-  pertama setelah 4,4 s, RSS server 4,3 GiB — hasil belum di-stream.
-- Batch Arrow ke klien: 64k baris.
+Hasil besar (7,6 juta baris `lineitem`): CLI 1,7 s. Server streaming: batch
+pertama 0,5–0,7 s, total 9,6–11 s; materialisasi: batch pertama 2,2–4,5 s,
+total 6,2–8,7 s dan memori hasil tidak terbatas. Ekspor raksasa ~25% lebih
+lama dengan streaming; buffer lebih besar (`--streaming-buffer-size`)
+mendekatkan ke materialisasi. Batch Arrow ke klien: 64k baris. Detail: ADR
+33–34.
 
 ## Dokumentasi
 

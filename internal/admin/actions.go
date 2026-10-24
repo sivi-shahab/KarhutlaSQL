@@ -75,8 +75,13 @@ func (o Options) Do(ctx context.Context, typ string, body []byte) ([]byte, error
 		if b.SessionID == id.TokenID {
 			return nil, status.Error(codes.InvalidArgument, "cannot kill the current session")
 		}
-		if !o.Sessions.Kill(b.SessionID) {
+		killed, err := o.Sessions.Kill(ctx, b.SessionID)
+		if !killed {
 			return nil, status.Error(codes.NotFound, "session not found")
+		}
+		if err != nil {
+			o.Audit.Emit(ctx, audit.Event{Type: audit.SessionKilled, User: id.Subject, Source: id.Source, Target: b.SessionID, Via: "action", Status: "PARTIAL", Error: err.Error()})
+			return nil, status.Error(codes.Unavailable, err.Error())
 		}
 		o.Audit.Emit(ctx, audit.Event{Type: audit.SessionKilled, User: id.Subject, Source: id.Source, Target: b.SessionID, Via: "action"})
 		out = map[string]any{"session_id": b.SessionID, "killed": true}

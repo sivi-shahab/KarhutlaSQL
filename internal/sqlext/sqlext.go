@@ -395,7 +395,11 @@ func (d Deps) kill(ctx context.Context, args []any, _ map[string]any) ([][]any, 
 	if target == id.TokenID {
 		return nil, errors.New("karhutla_kill_session: cannot kill the current session")
 	}
-	killed := d.Sessions.Kill(target)
+	killed, err := d.Sessions.Kill(ctx, target)
+	if err != nil {
+		d.Audit.Emit(ctx, audit.Event{Type: audit.SessionKilled, User: id.Subject, Source: id.Source, Target: target, Via: "sql", Status: "PARTIAL", Error: err.Error()})
+		return nil, fmt.Errorf("karhutla_kill_session: %w", err)
+	}
 	if killed {
 		d.Audit.Emit(ctx, audit.Event{Type: audit.SessionKilled, User: id.Subject, Source: id.Source, Target: target, Via: "sql"})
 	}

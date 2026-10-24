@@ -212,7 +212,7 @@ func TestAuthz_OIDC(t *testing.T) {
 	}
 
 	// Kill sesi OIDC (sid) → token hasil refresh dengan sid yang sama juga ditolak.
-	if !env.sessions.Kill("oidc:s-ana") {
+	if killed, err := env.sessions.Kill(context.Background(), "oidc:s-ana"); !killed || err != nil {
 		t.Fatal("OIDC session not registered under sid")
 	}
 	refreshed := idp.token(t, jwt.MapClaims{"preferred_username": "ana", "email": "ana@bankmega.com", "sid": "s-ana", "exp": time.Now().Add(2 * time.Hour).Unix()})

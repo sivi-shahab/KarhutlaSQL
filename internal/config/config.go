@@ -70,6 +70,8 @@ type Config struct {
 	ResultCacheTTL           time.Duration
 	ResultCacheMaxBytes      int64
 	ResultCacheMaxEntryBytes int64
+	// RevocationSyncInterval poll revocation bersama (multi-instance, butuh arsip).
+	RevocationSyncInterval time.Duration
 	// Backup bertingkat (Fase 8d): interval 0 = hanya lewat DoAction backup.
 	BackupInterval                              time.Duration
 	BackupStagingDir                            string
@@ -165,6 +167,7 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.Duration("result-cache-ttl", 0, "umur hasil SELECT di result cache (per identitas, invalidasi saat data berubah); 0 = mati")
 	fs.Int64("result-cache-max-bytes", 256<<20, "batas total byte result cache (LRU)")
 	fs.Int64("result-cache-max-entry-bytes", 20<<20, "hasil lebih besar dari ini tidak di-cache")
+	fs.Duration("revocation-sync-interval", 5*time.Second, "interval sinkron kill session antar instance lewat arsip (revocations/); berlaku bila arsip dikonfigurasi")
 	fs.Duration("backup-interval", 0, "interval backup terjadwal ke arsip (EXPORT DATABASE catalog DuckDB + snapshot DuckLake); 0 = hanya DoAction backup")
 	fs.String("backup-staging-dir", "", "direktori lokal sementara untuk EXPORT (otomatis masuk allowed-directories); default <state-dir>/backup-staging")
 	fs.Duration("backup-retention-daily", 7*24*time.Hour, "retensi object-lock backup harian")
@@ -261,6 +264,7 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		ResultCacheTTL:           v.GetDuration("result-cache-ttl"),
 		ResultCacheMaxBytes:      v.GetInt64("result-cache-max-bytes"),
 		ResultCacheMaxEntryBytes: v.GetInt64("result-cache-max-entry-bytes"),
+		RevocationSyncInterval:   v.GetDuration("revocation-sync-interval"),
 		BackupInterval:           v.GetDuration("backup-interval"),
 		BackupStagingDir:         v.GetString("backup-staging-dir"),
 		BackupRetentionDaily:     v.GetDuration("backup-retention-daily"),
@@ -343,6 +347,9 @@ func (c Config) validate() error {
 	}
 	if c.ArchiveRetention <= 0 || c.AccessLogFlushInterval <= 0 {
 		errs = append(errs, errors.New("archive-retention and access-log-flush-interval must be > 0"))
+	}
+	if c.RevocationSyncInterval <= 0 {
+		errs = append(errs, errors.New("revocation-sync-interval must be > 0"))
 	}
 	if c.BackupInterval < 0 || c.BackupRetentionDaily <= 0 || c.BackupRetentionWeekly <= 0 || c.BackupRetentionMonthly <= 0 {
 		errs = append(errs, errors.New("backup-interval must be >= 0 and backup-retention-* > 0"))

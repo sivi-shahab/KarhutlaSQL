@@ -272,6 +272,15 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}, auditLog)
 		m.Registry.MustRegister(syncer.Errors())
 	}
+	var revSync *session.RevocationSync
+	if archive != nil { // kill session berlaku di semua instance yang berbagi arsip (ADR 39)
+		host, _ := os.Hostname()
+		revSync = &session.RevocationSync{Store: archive, Registry: sessions, Instance: host}
+		if err := revSync.Sync(ctx); err != nil { // fail-closed: token yang sudah di-kill harus ditolak sejak start
+			return fmt.Errorf("main.serve: revocations: %w", err)
+		}
+		sessions.SetPublisher(revSync.Publish)
+	}
 	runBackup := newBackup(cfg, eng, archive, signer, auditLog, log)
 	health := healthCheck(eng, cfg.HealthCheckQuery)
 	ai := interceptor.NewAuth(interceptor.AuthOptions{Local: authn, OIDC: oidcVerifier, Policy: policy, Audit: auditLog, Metrics: m, Log: log})
@@ -348,6 +357,9 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		go func() { errc <- admin.Serve(ctx, mcpLis, h, log); cancel() }()
 	}
 	go sessions.Run(ctx, time.Minute)
+	if revSync != nil {
+		go revSync.Run(ctx, cfg.RevocationSyncInterval, func(err error) { log.Warn("revocation sync failed; retrying", "err", err) })
+	}
 	if cfg.BackupInterval > 0 && archive != nil {
 		go func() {
 			t := time.NewTicker(cfg.BackupInterval)

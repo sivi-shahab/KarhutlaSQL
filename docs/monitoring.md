@@ -52,6 +52,18 @@ curl -k -X DELETE -H "Authorization: Bearer $TOKEN" https://host:9090/admin/sess
 
 Semua kill tercatat di audit sebagai `session_killed` (`target`, `via`).
 
+**Multi-instance** (beberapa instance berbagi arsip `--archive-*`, mis.
+[DuckLake](ducklake.md)): kill disebarkan lewat arsip sebagai objek
+`revocations/until=<tanggal>/<hash>.json` (WORM, sekaligus jejak kill).
+Setiap instance memuat semua revocation aktif saat start (gagal = tidak
+start) dan menyinkronkannya setiap `--revocation-sync-interval` (5s):
+token ditolak dan statement sesi itu dibatalkan di instance mana pun.
+Kill boleh dijalankan dari instance mana saja, juga bila sesi berjalan di
+instance lain (ID sesi dari `karhutla_sessions()` instance itu atau audit).
+Bila arsip gagal saat kill: revoke berlaku di instance itu saja dan kill
+mengembalikan `UNAVAILABLE` (audit `status: PARTIAL`) — ulangi. Jeda
+penyebaran ≤ interval sinkron.
+
 ## Riwayat query & slow-query log (G-09)
 
 ```sql

@@ -62,8 +62,14 @@ func Handler(o Options) http.Handler {
 	}))
 	mux.HandleFunc("DELETE /admin/sessions/{id}", o.admin(func(w http.ResponseWriter, r *http.Request, id auth.Identity) {
 		target := r.PathValue("id")
-		if !o.Sessions.Kill(target) {
+		killed, err := o.Sessions.Kill(r.Context(), target)
+		if !killed {
 			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			o.Audit.Emit(auth.WithIdentity(r.Context(), id), audit.Event{Type: audit.SessionKilled, User: id.Subject, Source: id.Source, Peer: r.RemoteAddr, Target: target, Via: "http", Status: "PARTIAL", Error: err.Error()})
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 		o.Audit.Emit(auth.WithIdentity(r.Context(), id), audit.Event{Type: audit.SessionKilled, User: id.Subject, Source: id.Source, Peer: r.RemoteAddr, Target: target, Via: "http"})

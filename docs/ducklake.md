@@ -103,7 +103,8 @@ ter-mask.
 | Data & time travel | Bersama (DuckLake) |
 | Policy, classification, reports | Sama bila dari ConfigMap/file yang sama; tiap instance memuat sendiri |
 | Access history, report, hasil DQ | Arsip bersama; hasil `dq_publish` di instance lain dimuat saat DQ gate report & `karhutla_dq_results()` |
-| Sesi, `kill_session`, revoke token | **Per instance** — kill di instance tempat sesi berjalan; token OIDC yang di-revoke di satu instance masih diterima instance lain sampai `exp` |
+| Sesi | Per instance (`karhutla_sessions()` menampilkan sesi instance itu) |
+| `kill_session`, revoke token | Bersama lewat arsip: berlaku di semua instance dalam `--revocation-sync-interval` (5s), dari instance mana pun ([monitoring](monitoring.md#sesi)) |
 | Token login lokal | Berlaku lintas instance hanya bila `KARHUTLASQL_JWT_SECRET` sama |
 | Four-eyes (G-11) | State per instance (`--state-dir`): perubahan policy disetujui di tiap instance |
 | Tabel lokal (`--database-filename`) | Per instance; pakai `:memory:` bila semua data di lake |

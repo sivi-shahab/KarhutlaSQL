@@ -71,6 +71,7 @@ flag `*-file` menunjuk file (kunci privat wajib 0600).
 | `--result-cache-max-bytes` | `KARHUTLASQL_RESULT_CACHE_MAX_BYTES` | `268435456` | batas total byte result cache (LRU) |
 | `--result-cache-max-entry-bytes` | `KARHUTLASQL_RESULT_CACHE_MAX_ENTRY_BYTES` | `20971520` | hasil lebih besar dari ini tidak di-cache |
 | `--result-cache-ttl` | `KARHUTLASQL_RESULT_CACHE_TTL` | `0s` | umur hasil SELECT di result cache (per identitas, invalidasi saat data berubah); 0 = mati |
+| `--revocation-sync-interval` | `KARHUTLASQL_REVOCATION_SYNC_INTERVAL` | `5s` | interval sinkron kill session antar instance lewat arsip (revocations/); berlaku bila arsip dikonfigurasi |
 | `--session-idle-timeout` | `KARHUTLASQL_SESSION_IDLE_TIMEOUT` | `1h0m0s` | sesi tanpa aktivitas dibuang dari registry (statement/prepared handle-nya ikut hilang) |
 | `--slow-query-threshold` | `KARHUTLASQL_SLOW_QUERY_THRESHOLD` | `10s` | eksekusi (di luar antre) selama ini dicatat ke log slow_query; 0 = mati |
 | `--state-dir` | `KARHUTLASQL_STATE_DIR` | — | direktori state server (persetujuan policy, 0700); default <dir database>/karhutlasql-state |

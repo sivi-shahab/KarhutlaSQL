@@ -6,6 +6,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,10 @@ type Registry struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
 	revoked  map[string]time.Time // jti → exp token
+
+	// publish menyebarkan revocation ke instance lain (RevocationSync);
+	// nil = satu instance.
+	publish func(ctx context.Context, id string, until time.Time) error
 }
 
 // NewRegistry membuat registry; sesi tanpa statement aktif yang idle lebih
@@ -93,23 +98,46 @@ func (r *Registry) Revoked(tokenID string) bool {
 }
 
 // Kill membatalkan semua statement aktif sesi id dan me-revoke tokennya sampai
-// kedaluwarsa. false bila sesi tidak ada di registry.
-func (r *Registry) Kill(id string) bool {
+// kedaluwarsa (minimal MinRevocation). Dengan revocation bersama
+// (SetPublisher) revocation juga disebarkan ke instance lain dan berlaku
+// walau sesi tidak aktif di instance ini. false = sesi tidak dikenal dan
+// tidak ada revocation bersama; error = revoke lokal berhasil tetapi gagal
+// disebarkan.
+func (r *Registry) Kill(ctx context.Context, id string) (bool, error) {
+	r.mu.Lock()
+	s, local := r.sessions[id]
+	publish := r.publish
+	r.mu.Unlock()
+	if !local && publish == nil {
+		return false, nil
+	}
+	// Minimal 24 jam: token OIDC baru hasil refresh membawa sid yang sama
+	// dengan exp lebih lama (spec §6: TTL token ≤ 24h).
+	until := r.now().Add(MinRevocation)
+	if local && s.exp.After(until) {
+		until = s.exp
+	}
+	r.Revoke(id, until)
+	if publish != nil {
+		if err := publish(ctx, id, until); err != nil {
+			return true, fmt.Errorf("session.Kill: revoked on this instance only: %w", err)
+		}
+	}
+	return true, nil
+}
+
+// Revoke menolak token id sampai until dan membatalkan statement sesi itu
+// bila aktif di instance ini (juga untuk revocation dari instance lain).
+func (r *Registry) Revoke(id string, until time.Time) {
 	r.mu.Lock()
 	s, ok := r.sessions[id]
-	if ok {
-		delete(r.sessions, id)
-		// Minimal 24 jam: token OIDC baru hasil refresh membawa sid yang sama
-		// dengan exp lebih lama (spec §6: TTL token ≤ 24h).
-		until := r.now().Add(MinRevocation)
-		if s.exp.After(until) {
-			until = s.exp
-		}
+	delete(r.sessions, id)
+	if cur, seen := r.revoked[id]; !seen || until.After(cur) {
 		r.revoked[id] = until
 	}
 	r.mu.Unlock()
 	if !ok {
-		return false
+		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,7 +145,13 @@ func (r *Registry) Kill(id string) bool {
 		st.cancel(ErrKilled)
 	}
 	clear(s.handles)
-	return true
+}
+
+// SetPublisher memasang penyebar revocation (sebelum server melayani).
+func (r *Registry) SetPublisher(p func(ctx context.Context, id string, until time.Time) error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.publish = p
 }
 
 // Sweep membuang sesi idle dan revocation yang tokennya sudah kedaluwarsa.

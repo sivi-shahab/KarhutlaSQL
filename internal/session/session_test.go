@@ -29,7 +29,9 @@ func TestRegistry_KillCancelsAndRevokes(t *testing.T) {
 	if _, ok := b.Get("h"); ok {
 		t.Fatal("handle visible to other session")
 	}
-	if !r.Kill("A") || r.Kill("nope") {
+	killed, err1 := r.Kill(context.Background(), "A")
+	unknown, err2 := r.Kill(context.Background(), "nope")
+	if !killed || unknown || err1 != nil || err2 != nil {
 		t.Fatal("kill result")
 	}
 	if !errors.Is(context.Cause(ctx), ErrKilled) {
@@ -54,7 +56,7 @@ func TestRegistry_Sweep(t *testing.T) {
 	defer done()
 	_ = idle
 	_, _ = r.Attach(auth.Identity{TokenID: "dead", ExpiresAt: exp}, "")
-	r.Kill("dead")
+	_, _ = r.Kill(context.Background(), "dead")
 
 	now = now.Add(2 * time.Minute)
 	r.Sweep()

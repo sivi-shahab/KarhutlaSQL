@@ -78,6 +78,8 @@ Diunduh dari `extensions.duckdb.org` saat `make docker-lake` (bukan Go module, t
 | pyarrow | Apache-2.0 | Integration test |
 | flight-sql-jdbc-driver (Java, 19.0.0) | Apache-2.0 | Smoke test JDBC (`tests/jdbc/`, tidak di-vendor) |
 | pytest | MIT | Integration test |
+| Archify (skill/CLI, tidak di-vendor; HTML hasil render di `docs/diagram/`) | MIT | Diagram arsitektur interaktif |
+| actions/upload-pages-artifact, actions/deploy-pages | MIT | Terbitkan situs docs ke GitHub Pages |
 | testcontainers-go | MIT | Keycloak dev di test |
 | Keycloak (image) | Apache-2.0 | IdP dev |
 | great_expectations (GX Core, Python) | Apache-2.0 | DQ runner contoh + integration test (Q-02) |

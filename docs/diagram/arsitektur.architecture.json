@@ -1,0 +1,349 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "KarhutlaSQL — Arsitektur Server Flight SQL",
+    "output": "docs/diagram/arsitektur.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "clients",
+      "type": "external",
+      "label": "Klien BI & ADBC",
+      "sublabel": "JDBC / ADBC / CLI",
+      "pos": [
+        40,
+        260
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "agents",
+      "type": "external",
+      "label": "Agen AI",
+      "sublabel": "Claude / Copilot",
+      "pos": [
+        40,
+        440
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "idp",
+      "type": "security",
+      "label": "IdP OIDC",
+      "sublabel": "Keycloak · JWKS",
+      "pos": [
+        300,
+        80
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "grpc",
+      "type": "backend",
+      "label": "Flight SQL server",
+      "sublabel": "gRPC TLS · auth · sesi",
+      "pos": [
+        300,
+        260
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "tag": ":31337"
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "Server MCP",
+      "sublabel": "/mcp HTTP · stdio",
+      "pos": [
+        300,
+        440
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "tag": "profil ai_sandbox"
+    },
+    {
+      "id": "gov",
+      "type": "security",
+      "label": "Governance",
+      "sublabel": "authz · masking · RLS",
+      "pos": [
+        580,
+        260
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "tag": "fail-closed"
+    },
+    {
+      "id": "exec",
+      "type": "backend",
+      "label": "Eksekusi",
+      "sublabel": "antrean · kuota · cache",
+      "pos": [
+        860,
+        260
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "engine",
+      "type": "backend",
+      "label": "Engine DuckDB",
+      "sublabel": "stream Arrow · guardrail",
+      "pos": [
+        1140,
+        260
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "duckfile",
+      "type": "database",
+      "label": "File DuckDB",
+      "sublabel": "warehouse.duckdb",
+      "pos": [
+        1140,
+        80
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "lake",
+      "type": "database",
+      "label": "DuckLake",
+      "sublabel": "Postgres + MinIO",
+      "pos": [
+        1140,
+        440
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "tag": "multi-writer"
+    },
+    {
+      "id": "obs",
+      "type": "cloud",
+      "label": "Observabilitas",
+      "sublabel": "Prometheus · OTel",
+      "pos": [
+        860,
+        80
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "ops",
+      "type": "backend",
+      "label": "Report & operasi",
+      "sublabel": "report run · backup · DQ",
+      "pos": [
+        580,
+        440
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "archive",
+      "type": "database",
+      "label": "Arsip WORM",
+      "sublabel": "S3 object-lock",
+      "pos": [
+        860,
+        440
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "vault",
+      "type": "security",
+      "label": "Vault Transit",
+      "sublabel": "kunci Ed25519 / HSM",
+      "pos": [
+        580,
+        620
+      ],
+      "size": [
+        160,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Proses karhutlasql-server (per instance / kelas beban)",
+      "wraps": [
+        "grpc",
+        "mcp",
+        "gov",
+        "exec",
+        "engine",
+        "ops"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "client-flight",
+      "from": "clients",
+      "to": "grpc",
+      "label": "Flight SQL",
+      "variant": "emphasis"
+    },
+    {
+      "id": "agent-mcp",
+      "from": "agents",
+      "to": "mcp",
+      "label": "MCP"
+    },
+    {
+      "id": "idp-jwks",
+      "from": "idp",
+      "to": "grpc",
+      "label": "JWKS",
+      "variant": "security"
+    },
+    {
+      "id": "mcp-loopback",
+      "from": "mcp",
+      "to": "grpc",
+      "label": "gRPC in-process",
+      "variant": "dashed"
+    },
+    {
+      "id": "grpc-gov",
+      "from": "grpc",
+      "to": "gov",
+      "label": "statement",
+      "variant": "emphasis"
+    },
+    {
+      "id": "gov-exec",
+      "from": "gov",
+      "to": "exec",
+      "label": "SQL ter-rewrite",
+      "variant": "emphasis"
+    },
+    {
+      "id": "exec-engine",
+      "from": "exec",
+      "to": "engine",
+      "label": "eksekusi",
+      "variant": "emphasis"
+    },
+    {
+      "id": "engine-file",
+      "from": "engine",
+      "to": "duckfile",
+      "label": "baca / tulis"
+    },
+    {
+      "id": "engine-lake",
+      "from": "engine",
+      "to": "lake",
+      "label": "ATTACH"
+    },
+    {
+      "id": "exec-obs",
+      "from": "exec",
+      "to": "obs",
+      "label": "metrics · trace",
+      "variant": "dashed"
+    },
+    {
+      "id": "exec-archive",
+      "from": "exec",
+      "to": "archive",
+      "label": "access history",
+      "variant": "dashed"
+    },
+    {
+      "id": "gov-ops",
+      "from": "gov",
+      "to": "ops",
+      "label": "report_run"
+    },
+    {
+      "id": "ops-archive",
+      "from": "ops",
+      "to": "archive",
+      "label": "manifest"
+    },
+    {
+      "id": "ops-vault",
+      "from": "ops",
+      "to": "vault",
+      "label": "tanda tangan",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Governance di server",
+      "items": [
+        "Izin per tabel default-deny (policy YAML)",
+        "Masking kolom bertag & RLS via rewrite AST",
+        "Kanal MCP selalu dibatasi profil ai_sandbox"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Eksekusi",
+      "items": [
+        "Hasil di-stream per chunk Arrow (64 MB buffer)",
+        "Result cache per identitas, invalidasi snapshot",
+        "Kuota per tim + chargeback"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Kepatuhan",
+      "items": [
+        "Access history per kolom PII (Parquet WORM)",
+        "Report run bertanda tangan + time travel DuckLake",
+        "Kill session disebarkan ke semua instance via arsip"
+      ]
+    }
+  ]
+}

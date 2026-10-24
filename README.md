@@ -19,6 +19,48 @@ Server SQL analitik ringan: **Apache Arrow Flight SQL** di atas **DuckDB**, ditu
 | Agen AI | Server MCP (stdio + Streamable HTTP/OAuth) dengan profil `ai_sandbox` dipaksakan, verified queries + semantic model |
 | Operasi | Bulk ingest (`adbc_ingest`), backup bertingkat ke arsip WORM, schema migration berversi, kunci tanda tangan di Vault/HSM |
 
+## Arsitektur
+
+```mermaid
+flowchart LR
+    clients["Klien BI & ADBC<br/>JDBC / ADBC / CLI"]
+    agents["Agen AI<br/>Claude / Copilot"]
+    idp["IdP OIDC<br/>Keycloak · JWKS"]
+    obs["Observabilitas<br/>Prometheus · OTel"]
+    vault["Vault Transit<br/>kunci Ed25519 / HSM"]
+    subgraph srv["Proses karhutlasql-server (per instance / kelas beban)"]
+        grpc["Flight SQL server<br/>gRPC TLS · auth · sesi"]
+        mcp["Server MCP<br/>/mcp HTTP · stdio"]
+        gov["Governance<br/>authz · masking · RLS"]
+        exec["Eksekusi<br/>antrean · kuota · cache"]
+        engine["Engine DuckDB<br/>stream Arrow · guardrail"]
+        ops["Report & operasi<br/>report run · backup · DQ"]
+    end
+    duckfile[("File DuckDB")]
+    lake[("DuckLake<br/>Postgres + MinIO")]
+    archive[("Arsip WORM<br/>S3 object-lock")]
+
+    clients -- Flight SQL --> grpc
+    agents -- MCP --> mcp
+    mcp -. gRPC in-process .-> grpc
+    idp -. JWKS .-> grpc
+    grpc -- statement --> gov
+    gov -- SQL ter-rewrite --> exec
+    exec -- eksekusi --> engine
+    engine -- baca / tulis --> duckfile
+    engine -- ATTACH --> lake
+    exec -. metrics · trace .-> obs
+    exec -. access history .-> archive
+    gov -- report_run --> ops
+    ops -- manifest --> archive
+    ops -. tanda tangan .-> vault
+```
+
+Versi interaktif (klik komponen, telusuri jalur, ekspor PNG/SVG):
+[`docs/diagram/arsitektur.html`](docs/diagram/arsitektur.html), juga di
+halaman "Diagram arsitektur" situs dokumentasi (GitHub Pages, workflow
+`pages`). Sumber diagram: [`docs/diagram/arsitektur.architecture.json`](docs/diagram/arsitektur.architecture.json).
+
 ## Quick start
 
 ```bash

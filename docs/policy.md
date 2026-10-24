@@ -75,6 +75,8 @@ roles:
 - Banyak role: tabel tanpa filter bila salah satu role pemberi izin baca tidak
   punya `row_filters` untuk tabel itu, selain itu OR semua filter; kolom
   terbuka bila salah satu role `unmask` tag-nya; batas profil = yang paling ketat.
+- Batas role `ai_sandbox` juga diterapkan pada setiap statement lewat
+  [server MCP](mcp.md), di atas role pemanggil (termasuk admin).
 
 `--classification-file classification.yaml`:
 

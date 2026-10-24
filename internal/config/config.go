@@ -70,6 +70,11 @@ type Config struct {
 	ResultCacheTTL           time.Duration
 	ResultCacheMaxBytes      int64
 	ResultCacheMaxEntryBytes int64
+	// MCP (Fase 8c): port 0 = mati.
+	MCPPort             int
+	MCPResourceURL      string
+	MCPMaxRows          int
+	VerifiedQueriesFile string
 	// OpenTelemetry tracing (OTLP gRPC); endpoint kosong = mati.
 	OTelEndpoint    string
 	OTelInsecure    bool
@@ -149,6 +154,10 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.Duration("result-cache-ttl", 0, "umur hasil SELECT di result cache (per identitas, invalidasi saat data berubah); 0 = mati")
 	fs.Int64("result-cache-max-bytes", 256<<20, "batas total byte result cache (LRU)")
 	fs.Int64("result-cache-max-entry-bytes", 20<<20, "hasil lebih besar dari ini tidak di-cache")
+	fs.Int("mcp-port", 0, "port server MCP Streamable HTTP (/mcp, Bearer token; TLS mengikuti gRPC) untuk agen AI; 0 = mati")
+	fs.String("mcp-resource-url", "", "URL publik endpoint MCP (mis. https://kq.bank.local:8443/mcp) untuk metadata OAuth RFC 9728; kosong = tanpa metadata")
+	fs.Int("mcp-max-rows", 500, "batas baris per hasil tool MCP (di atas batas profil ai_sandbox)")
+	fs.String("verified-queries-file", "", "YAML verified queries + semantic model (karhutla_verified_queries(), resource MCP)")
 	fs.String("otel-endpoint", "", "collector OTLP gRPC (host:port) untuk tracing OpenTelemetry; header auth lewat env OTEL_EXPORTER_OTLP_HEADERS; kosong = mati")
 	fs.Bool("otel-insecure", false, "OTLP tanpa TLS (dev)")
 	fs.Float64("otel-sample-ratio", 1, "rasio sampling trace baru (0..1); trace dari klien mengikuti keputusan induk")
@@ -232,6 +241,10 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		ResultCacheTTL:           v.GetDuration("result-cache-ttl"),
 		ResultCacheMaxBytes:      v.GetInt64("result-cache-max-bytes"),
 		ResultCacheMaxEntryBytes: v.GetInt64("result-cache-max-entry-bytes"),
+		MCPPort:                  v.GetInt("mcp-port"),
+		MCPResourceURL:           v.GetString("mcp-resource-url"),
+		MCPMaxRows:               v.GetInt("mcp-max-rows"),
+		VerifiedQueriesFile:      v.GetString("verified-queries-file"),
 		OTelEndpoint:             v.GetString("otel-endpoint"),
 		OTelInsecure:             v.GetBool("otel-insecure"),
 		OTelSampleRatio:          v.GetFloat64("otel-sample-ratio"),
@@ -298,6 +311,9 @@ func (c Config) validate() error {
 	}
 	if c.ArchiveRetention <= 0 || c.AccessLogFlushInterval <= 0 {
 		errs = append(errs, errors.New("archive-retention and access-log-flush-interval must be > 0"))
+	}
+	if c.MCPPort < 0 || c.MCPPort > 65535 || c.MCPMaxRows <= 0 {
+		errs = append(errs, errors.New("mcp-port must be 0..65535 and mcp-max-rows > 0"))
 	}
 	if c.OTelSampleRatio < 0 || c.OTelSampleRatio > 1 {
 		errs = append(errs, errors.New("otel-sample-ratio must be between 0 and 1"))

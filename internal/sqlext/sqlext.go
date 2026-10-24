@@ -28,6 +28,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/dq"
 	"github.com/bankmega/karhutlasql/internal/quota"
 	"github.com/bankmega/karhutlasql/internal/session"
+	"github.com/bankmega/karhutlasql/internal/verified"
 )
 
 // ErrPermissionDenied awalan pesan error fungsi yang butuh role admin; lapisan
@@ -54,6 +55,8 @@ type Deps struct {
 	RunReport func(ctx context.Context, name, asOf string) ([]any, error)
 	// Quota pemakaian per tim untuk karhutla_chargeback(); nil = kosong.
 	Quota *quota.Tracker
+	// Verified verified queries & semantic model (Fase 8c); nil = kosong.
+	Verified *verified.Set
 	// MaskKey kunci HMAC-SHA256 untuk mask hash_hmac (G-03); kosong = fungsi
 	// mask menolak semua pemanggilan.
 	MaskKey []byte
@@ -70,13 +73,15 @@ func WithMaskNonce(ctx context.Context, nonce string) context.Context {
 // Register mendaftarkan fungsi karhutla_*() pada conn (berlaku untuk seluruh database).
 func Register(_ context.Context, conn *sql.Conn, d Deps) error {
 	fns := map[string]duckdb.RowTableFunction{
-		"karhutla_sessions":       table(sessionCols, nil, nil, d.sessions),
-		"karhutla_kill_session":   table(killCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, nil, d.kill),
-		"karhutla_metrics":        table(metricCols, nil, nil, d.metrics),
-		"karhutla_query_history":  table(historyCols, nil, nil, d.history),
-		"karhutla_access_history": table(accessCols, nil, nil, d.access),
-		"karhutla_dq_results":     table(dqCols, nil, nil, d.dqResults),
-		"karhutla_chargeback":     table(chargebackCols, nil, nil, d.chargeback),
+		"karhutla_sessions":         table(sessionCols, nil, nil, d.sessions),
+		"karhutla_kill_session":     table(killCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, nil, d.kill),
+		"karhutla_metrics":          table(metricCols, nil, nil, d.metrics),
+		"karhutla_query_history":    table(historyCols, nil, nil, d.history),
+		"karhutla_access_history":   table(accessCols, nil, nil, d.access),
+		"karhutla_dq_results":       table(dqCols, nil, nil, d.dqResults),
+		"karhutla_chargeback":       table(chargebackCols, nil, nil, d.chargeback),
+		"karhutla_verified_queries": table(verifiedCols, nil, nil, d.verifiedQueries),
+		"karhutla_semantic_model":   table([]col{{"semantic_model", duckdb.TYPE_VARCHAR}}, nil, nil, d.semanticModel),
 		// Nama terpisah: duckdb-go gagal bila named argument tidak diberikan dan
 		// DuckDB mengabaikan registrasi overload kedua.
 		"karhutla_report_run":           table(reportCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, nil, d.report),
@@ -157,6 +162,9 @@ var (
 		{"validated_at", duckdb.TYPE_TIMESTAMP_TZ}, {"run_by", duckdb.TYPE_VARCHAR}, {"results", duckdb.TYPE_VARCHAR},
 	}
 	killCols = []col{{"session_id", duckdb.TYPE_VARCHAR}, {"killed", duckdb.TYPE_BOOLEAN}}
+	// verifiedCols karhutla_verified_queries() (Fase 8c).
+	verifiedCols = []col{{"name", duckdb.TYPE_VARCHAR}, {"question", duckdb.TYPE_VARCHAR}, {"sql", duckdb.TYPE_VARCHAR},
+		{"verified_by", duckdb.TYPE_VARCHAR}, {"verified_at", duckdb.TYPE_TIMESTAMP_TZ}}
 	// chargebackCols karhutla_chargeback(): jendela kuota berjalan + total sejak start.
 	chargebackCols = []col{{"team", duckdb.TYPE_VARCHAR}, {"window_start", duckdb.TYPE_TIMESTAMP_TZ},
 		{"queries", duckdb.TYPE_BIGINT}, {"exec_seconds", duckdb.TYPE_DOUBLE}, {"rows", duckdb.TYPE_BIGINT}, {"bytes", duckdb.TYPE_BIGINT},
@@ -396,6 +404,31 @@ func (d Deps) kill(ctx context.Context, args []any, _ map[string]any) ([][]any, 
 
 // metrics meratakan snapshot gatherer: histogram → _bucket{le}/_sum/_count,
 // summary → {quantile}/_sum/_count.
+// verifiedQueries: verified queries (semua user; SQL dieksekusi sebagai pemanggil).
+func (d Deps) verifiedQueries(ctx context.Context, _ []any, _ map[string]any) ([][]any, error) {
+	if _, err := identity(ctx); err != nil {
+		return nil, err
+	}
+	var out [][]any
+	if d.Verified != nil {
+		for _, q := range d.Verified.List() {
+			out = append(out, []any{q.Name, q.Question, q.SQL, q.VerifiedBy, q.VerifiedAt})
+		}
+	}
+	return out, nil
+}
+
+// semanticModel: satu baris teks semantic model (kosong bila tidak ada).
+func (d Deps) semanticModel(ctx context.Context, _ []any, _ map[string]any) ([][]any, error) {
+	if _, err := identity(ctx); err != nil {
+		return nil, err
+	}
+	if d.Verified == nil {
+		return [][]any{{""}}, nil
+	}
+	return [][]any{{d.Verified.SemanticModel}}, nil
+}
+
 // chargeback: pemakaian per tim; admin melihat semua tim, user lain hanya timnya.
 func (d Deps) chargeback(ctx context.Context, _ []any, _ map[string]any) ([][]any, error) {
 	id, err := identity(ctx)

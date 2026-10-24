@@ -377,6 +377,41 @@ func (p *Policy) LimitsFor(roles []string) Limits {
 	return l
 }
 
+// AgentRole profil agen AI (G-06). Batasnya (bukan izin catalog-nya) ikut
+// berlaku untuk setiap statement lewat kanal MCP, apa pun role pemanggil.
+const AgentRole = "ai_sandbox"
+
+// AgentLimits batas kanal MCP: limit role ai_sandbox di policy (selalu
+// SELECT-only), atau default SELECT-only, 500 baris, 60 detik bila role itu
+// tidak didefinisikan.
+func (p *Policy) AgentLimits() Limits {
+	if _, ok := p.Roles[AgentRole]; !ok {
+		return Limits{SelectOnly: true, MaxRows: 500, Timeout: time.Minute, Group: scheduler.Default}
+	}
+	l := p.LimitsFor([]string{AgentRole})
+	l.SelectOnly = true
+	return l
+}
+
+// Tighten gabungan paling ketat dari l dan o; resource group o dipakai bila
+// bukan default.
+func (l Limits) Tighten(o Limits) Limits {
+	minPos := func(a, b int64) int64 {
+		if b > 0 && (a == 0 || b < a) {
+			return b
+		}
+		return a
+	}
+	l.SelectOnly = l.SelectOnly || o.SelectOnly
+	l.MaxRows = minPos(l.MaxRows, o.MaxRows)
+	l.MaxBytes = minPos(l.MaxBytes, o.MaxBytes)
+	l.Timeout = time.Duration(minPos(int64(l.Timeout), int64(o.Timeout)))
+	if o.Group != "" && o.Group != scheduler.Default {
+		l.Group = o.Group
+	}
+	return l
+}
+
 // DevPolicy dipakai bila --policy-file tidak diset: hanya user lokal yang
 // dikonfigurasi, sebagai admin. Tidak ada identitas OIDC yang diizinkan.
 func DevPolicy(localUser string) *Policy {

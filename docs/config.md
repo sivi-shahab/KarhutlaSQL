@@ -36,6 +36,9 @@ flag `*-file` menunjuk file (kunci privat wajib 0600).
 | `--log-level` | `KARHUTLASQL_LOG_LEVEL` | `info` | debug\|info\|warn\|error |
 | `--mask-hmac-key-env` | `KARHUTLASQL_MASK_HMAC_KEY_ENV` | `KARHUTLASQL_MASK_KEY` | nama env var berisi kunci HMAC mask hash_hmac (≥ 32 byte) |
 | `--max-concurrent` | `KARHUTLASQL_MAX_CONCURRENT` | `8` | statement berjalan bersamaan di resource group default; 0 = tanpa batas |
+| `--mcp-max-rows` | `KARHUTLASQL_MCP_MAX_ROWS` | `500` | batas baris per hasil tool MCP (di atas batas profil ai_sandbox) |
+| `--mcp-port` | `KARHUTLASQL_MCP_PORT` | `0` | port server MCP Streamable HTTP (/mcp, Bearer token; TLS mengikuti gRPC) untuk agen AI; 0 = mati |
+| `--mcp-resource-url` | `KARHUTLASQL_MCP_RESOURCE_URL` | — | URL publik endpoint MCP (mis. https://kq.bank.local:8443/mcp) untuk metadata OAuth RFC 9728; kosong = tanpa metadata |
 | `--metrics-port` | `KARHUTLASQL_METRICS_PORT` | `9090` | port HTTP admin (/healthz); 0 = mati |
 | `--mtls-ca` | `KARHUTLASQL_MTLS_CA` | — | CA PEM untuk verifikasi client cert (mTLS wajib bila diset) |
 | `--oidc-audience` | `KARHUTLASQL_OIDC_AUDIENCE` | `karhutlasql` | nilai wajib di claim aud token OIDC |
@@ -72,3 +75,4 @@ flag `*-file` menunjuk file (kunci privat wajib 0600).
 | `--uc-sync-interval` | `KARHUTLASQL_UC_SYNC_INTERVAL` | `15m0s` | interval sinkron penuh ke Unity Catalog |
 | `--uc-token-env` | `KARHUTLASQL_UC_TOKEN_ENV` | `KARHUTLASQL_UC_TOKEN` | nama env var bearer token Unity Catalog (opsional) |
 | `--username` | `KARHUTLASQL_USERNAME` | — | user lokal (wajib) |
+| `--verified-queries-file` | `KARHUTLASQL_VERIFIED_QUERIES_FILE` | — | YAML verified queries + semantic model (karhutla_verified_queries(), resource MCP) |

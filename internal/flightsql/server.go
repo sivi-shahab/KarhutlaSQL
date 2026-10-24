@@ -312,7 +312,7 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 		return nil, plan{}, nil, err
 	}
 	id, _ := auth.FromContext(ctx)
-	ev := audit.Event{User: id.Subject, Source: id.Source, Kind: kind}
+	ev := audit.Event{User: id.Subject, Source: id.Source, Kind: kind, Channel: Channel(ctx)}
 	s.opts.Audit.SQL(&ev, sql)
 	start := ev
 	start.Type = audit.StatementStart

@@ -64,6 +64,16 @@ unityCatalog:
 # Residency (G-07): path/prefix URL yang boleh diakses DuckDB.
 allowedDirectories: []
 
+# Server MCP untuk agen AI (Fase 8c): Streamable HTTP /mcp di port ini
+# (TLS sama dengan gRPC), Bearer = token OIDC/lokal pemanggil; batas profil
+# ai_sandbox berlaku untuk setiap tool call. 0 = mati.
+mcp:
+  port: 0
+  resourceUrl: ""      # URL publik, mis. https://kq.bank.local:8443/mcp (metadata OAuth RFC 9728)
+  maxRows: 500
+# Isi verified-queries.yaml (verified queries + semantic model).
+verifiedQueries: ""
+
 # DuckLake multi-writer (Fase 8a, ADR 35): catalog metadata di Postgres, file
 # data di S3/MinIO. Butuh image varian lake (make docker-lake). Instance per
 # kelas beban = satu release per kelas dengan nilai lake yang sama (lihat

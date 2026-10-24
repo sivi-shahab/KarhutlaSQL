@@ -13,3 +13,8 @@ spec:
     - name: admin
       port: 9090
       targetPort: admin
+    {{- with .Values.mcp.port }}
+    - name: mcp
+      port: {{ . }}
+      targetPort: mcp
+    {{- end }}

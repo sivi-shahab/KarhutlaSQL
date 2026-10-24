@@ -145,7 +145,7 @@ func Serve(ctx context.Context, lis net.Listener, h http.Handler, log *slog.Logg
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(lis) }()
-	log.Info("admin http listening", "addr", lis.Addr().String())
+	log.Info("http listening", "addr", lis.Addr().String())
 	select {
 	case err := <-errc:
 		return fmt.Errorf("admin.Serve: %w", err)

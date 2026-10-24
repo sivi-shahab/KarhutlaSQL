@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/bankmega/karhutlasql/internal/auth"
 )
@@ -214,5 +215,28 @@ func TestPolicy_Governance(t *testing.T) {
 		if _, err := Parse([]byte(y)); err == nil {
 			t.Errorf("Parse(%q) accepted", y)
 		}
+	}
+}
+
+func TestAgentLimits(t *testing.T) {
+	p, err := Parse([]byte(`
+default: deny
+roles:
+  admin: { catalogs: { "*": [read, write, admin] }, max_rows: 100 }
+  ai_sandbox: { catalogs: { w: [read] }, max_rows: 500, max_bytes: 1000, timeout: 30s, resource_group: ai }
+resource_groups:
+  ai: { max_concurrent: 1 }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := p.LimitsFor([]string{"admin"}).Tighten(p.AgentLimits())
+	want := Limits{SelectOnly: true, MaxRows: 100, MaxBytes: 1000, Timeout: 30 * time.Second, Group: "ai"}
+	if got != want {
+		t.Errorf("admin via mcp = %+v, want %+v", got, want)
+	}
+	// Tanpa role ai_sandbox: default aman.
+	if l := DevPolicy("admin").AgentLimits(); !l.SelectOnly || l.MaxRows != 500 || l.Timeout != time.Minute {
+		t.Errorf("default agent limits %+v", l)
 	}
 }

@@ -46,7 +46,8 @@ type Event struct {
 	User       string    `json:"user,omitempty"`
 	Source     string    `json:"source,omitempty"`
 	Peer       string    `json:"peer,omitempty"`
-	Kind       string    `json:"kind,omitempty"` // query | update
+	Kind       string    `json:"kind,omitempty"`    // query | update
+	Channel    string    `json:"channel,omitempty"` // mcp = lewat server MCP (agen AI)
 	SQLHash    string    `json:"sql_sha256,omitempty"`
 	SQL        string    `json:"sql,omitempty"` // hanya jika --audit-log-sql
 	Status     string    `json:"status,omitempty"`

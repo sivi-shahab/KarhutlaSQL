@@ -26,6 +26,14 @@ type Identity struct {
 	Attrs map[string]string
 }
 
+// Kanal klien: header gRPC ChannelHeader = ChannelMCP untuk statement dari
+// server MCP (agen AI). Header hanya bisa memperketat batas (profil
+// ai_sandbox), jadi klien yang mengirimnya sendiri tidak mendapat apa-apa.
+const (
+	ChannelHeader = "x-karhutla-channel"
+	ChannelMCP    = "mcp"
+)
+
 // RoleAdmin boleh melihat semua sesi dan kill session.
 const RoleAdmin = "admin"
 

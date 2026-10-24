@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,10 +32,13 @@ import (
 	"go.yaml.in/yaml/v3"
 	"google.golang.org/grpc"
 
+	"google.golang.org/grpc/test/bufconn"
+
 	"github.com/bankmega/karhutlasql/internal/accesslog"
 	"github.com/bankmega/karhutlasql/internal/admin"
 	"github.com/bankmega/karhutlasql/internal/approval"
 	"github.com/bankmega/karhutlasql/internal/audit"
+	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/auth/local"
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
 	"github.com/bankmega/karhutlasql/internal/authz"
@@ -47,6 +51,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/flightsql"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
+	"github.com/bankmega/karhutlasql/internal/mcp"
 	"github.com/bankmega/karhutlasql/internal/metrics"
 	"github.com/bankmega/karhutlasql/internal/objstore"
 	"github.com/bankmega/karhutlasql/internal/quota"
@@ -55,7 +60,9 @@ import (
 	"github.com/bankmega/karhutlasql/internal/server"
 	"github.com/bankmega/karhutlasql/internal/session"
 	"github.com/bankmega/karhutlasql/internal/sqlext"
+	"github.com/bankmega/karhutlasql/internal/verified"
 	"github.com/bankmega/karhutlasql/internal/version"
+	"github.com/bankmega/karhutlasql/pkg/client"
 )
 
 // queryHistorySize jumlah statement terakhir di karhutla_query_history().
@@ -189,6 +196,10 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	if dqStore != nil {
 		m.Registry.MustRegister(dqStore)
 	}
+	vset, err := verified.Load(cfg.VerifiedQueriesFile)
+	if err != nil {
+		return err
+	}
 	reports, signer, err := newReports(cfg, log)
 	if err != nil {
 		return err
@@ -201,7 +212,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	eng, err := duckdb.Open(ctx, duckdb.Config{Path: cfg.DatabaseFilename, InitSQL: initSQL,
 		AllowedDirectories: cfg.AllowedDirectories, Secrets: secrets, StreamingBufferSize: streamingBuffer(cfg.StreamingBufferSize),
 		Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Quota: quotas, Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, AccessLog: access, MaskKey: maskKey, DQ: dqStore,
+			return sqlext.Register(ctx, conn, sqlext.Deps{Quota: quotas, Verified: vset, Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, AccessLog: access, MaskKey: maskKey, DQ: dqStore,
 				RunReport: func(ctx context.Context, name, asOf string) ([]any, error) { return srv.ReportRow(ctx, name, asOf) }})
 		}})
 	if err != nil {
@@ -212,6 +223,15 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		log.Warn("result streaming unavailable; results are materialized before the first batch", "reason", err)
 	}
 
+	for _, q := range vset.List() { // verified query harus tetap satu SELECT yang valid
+		a, err := eng.Analyze(ctx, q.SQL)
+		if err == nil && a.Kind != "SELECT" {
+			err = fmt.Errorf("statement kind %s", a.Kind)
+		}
+		if err != nil {
+			return fmt.Errorf("main.serve: verified query %s must be a single valid SELECT: %w", q.Name, err)
+		}
+	}
 	var resultCache *cache.Cache
 	if cfg.ResultCacheTTL > 0 {
 		resultCache = cache.New(cfg.ResultCacheTTL, cfg.ResultCacheMaxBytes, cfg.ResultCacheMaxEntryBytes)
@@ -246,6 +266,15 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	if err != nil {
 		return fmt.Errorf("main.serve: %w", err)
 	}
+	var mcpLis net.Listener
+	if cfg.MCPPort != 0 {
+		if mcpLis, err = lc.Listen(ctx, "tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.MCPPort))); err != nil {
+			return errors.Join(fmt.Errorf("main.serve: %w", err), lis.Close())
+		}
+		if tlsCfg != nil {
+			mcpLis = tls.NewListener(mcpLis, tlsCfg)
+		}
+	}
 	var adminLis net.Listener
 	if cfg.MetricsPort != 0 {
 		if adminLis, err = lc.Listen(ctx, "tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.MetricsPort))); err != nil {
@@ -275,19 +304,30 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		"max_concurrent", cfg.MaxConcurrent, "queue_size", cfg.QueueSize, "rate_limit", cfg.RateLimit)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errc := make(chan error, 2)
+	errc := make(chan error, 4)
+	gopts := server.Options{
+		TLS:     tlsCfg,
+		Unary:   []grpc.UnaryServerInterceptor{ai.Unary(), rl.Unary(), si.Unary()},
+		Stream:  []grpc.StreamServerInterceptor{ai.Stream(), rl.Stream(), si.Stream()},
+		Health:  health,
+		Drain:   server.DrainTimeout,
+		Actions: actions(adminOpts, srv),
+		Tracing: cfg.OTelEndpoint != "",
+	}
 	go func() {
-		errc <- server.Serve(ctx, lis, srv, server.Options{
-			TLS:     tlsCfg,
-			Unary:   []grpc.UnaryServerInterceptor{ai.Unary(), rl.Unary(), si.Unary()},
-			Stream:  []grpc.StreamServerInterceptor{ai.Stream(), rl.Stream(), si.Stream()},
-			Health:  health,
-			Drain:   server.DrainTimeout,
-			Actions: actions(adminOpts, srv),
-			Tracing: cfg.OTelEndpoint != "",
-		}, log)
+		errc <- server.Serve(ctx, lis, srv, gopts, log)
 		cancel()
 	}()
+	n := 1
+	if mcpLis != nil {
+		h, err := newMCP(ctx, cfg, srv, gopts, ai, sessions, log, errc)
+		if err != nil {
+			cancel()
+			return errors.Join(err, mcpLis.Close(), <-errc)
+		}
+		n += 2 // Flight SQL in-process + HTTP
+		go func() { errc <- admin.Serve(ctx, mcpLis, h, log); cancel() }()
+	}
 	go sessions.Run(ctx, time.Minute)
 	accessDone := make(chan struct{})
 	if access != nil {
@@ -309,7 +349,6 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}()
 		defer func() { cancel(); <-syncDone }() // sebelum engine ditutup
 	}
-	n := 1
 	if adminLis != nil {
 		n++
 		h := admin.Handler(adminOpts)
@@ -319,6 +358,41 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		err = errors.Join(err, <-errc)
 	}
 	return err
+}
+
+// newMCP server MCP (Fase 8c): setiap tool call menjadi statement Flight SQL
+// lewat listener gRPC in-process (bufconn, tanpa jaringan) dengan token
+// pemanggil dan header kanal mcp, sehingga semua interceptor & governance
+// sama dengan klien biasa. Goroutine server in-process melapor ke errc.
+func newMCP(ctx context.Context, cfg config.Config, srv *flightsql.Server, gopts server.Options, ai *interceptor.Auth,
+	sessions *session.Registry, log *slog.Logger, errc chan<- error) (http.Handler, error) {
+	inproc := bufconn.Listen(1 << 20)
+	gopts.TLS = nil // in-process saja
+	go func() { errc <- server.Serve(ctx, inproc, srv, gopts, log) }()
+	cl, err := client.Dial(ctx, client.Config{Addr: "passthrough:///karhutlasql-inproc", NoLogin: true,
+		Metadata:    map[string]string{auth.ChannelHeader: auth.ChannelMCP},
+		DialOptions: []grpc.DialOption{grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return inproc.DialContext(ctx) })}})
+	if err != nil {
+		return nil, fmt.Errorf("main.newMCP: %w", err)
+	}
+	go func() { <-ctx.Done(); _ = cl.Close() }()
+	verify := func(ctx context.Context, token string) (string, time.Time, error) {
+		id, err := ai.Verify(ctx, token)
+		if err == nil && sessions.Revoked(id.TokenID) {
+			err = errors.New("session killed")
+		}
+		return id.Source + ":" + id.Subject, id.ExpiresAt, err
+	}
+	var issuers []string
+	if cfg.OIDCIssuer != "" {
+		issuers = []string{cfg.OIDCIssuer}
+	}
+	h, err := mcp.Handler(mcp.New(cl, version.Version, mcp.Options{MaxRows: cfg.MCPMaxRows}), verify, cfg.MCPResourceURL, issuers)
+	if err != nil {
+		return nil, fmt.Errorf("main.newMCP: %w", err)
+	}
+	log.Info("mcp enabled", "port", cfg.MCPPort, "resource_url", cfg.MCPResourceURL)
+	return h, nil
 }
 
 // newReports definisi report dan kunci tanda tangan (file 0600).

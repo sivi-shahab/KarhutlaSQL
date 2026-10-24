@@ -19,11 +19,14 @@ import (
 	"syscall"
 	"time"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
 	"golang.org/x/term"
 	"google.golang.org/grpc/status"
 
+	"github.com/bankmega/karhutlasql/internal/auth"
+	"github.com/bankmega/karhutlasql/internal/mcp"
 	"github.com/bankmega/karhutlasql/internal/report"
 	"github.com/bankmega/karhutlasql/internal/version"
 	"github.com/bankmega/karhutlasql/pkg/client"
@@ -52,6 +55,7 @@ type options struct {
 	browser   bool
 	tokenFile string
 
+	mcp       bool   // server MCP stdio untuk agen AI (Fase 8c)
 	verify    string // manifest.json report (G-10)
 	publicKey string
 }
@@ -90,6 +94,7 @@ func run(ctx context.Context, args []string, stdin *os.File, stdout, stderr io.W
 	fs.BoolVar(&o.browser, "browser", false, "dengan --oidc-login: login lewat browser (PKCE) alih-alih device code")
 	fs.StringVar(&o.verify, "verify", "", "verifikasi report: path manifest.json (tanda tangan + hash result di direktori yang sama), tanpa koneksi server")
 	fs.StringVar(&o.publicKey, "public-key", "", "dengan --verify: kunci publik Ed25519 PEM server")
+	fs.BoolVar(&o.mcp, "mcp", false, "jalankan server MCP (stdio) untuk agen AI: tools list_tables, run_query, verified queries; batas profil ai_sandbox berlaku di server")
 	fs.StringVar(&o.tokenFile, "token-file", filepath.Join(home, ".karhutlasql", "token.json"), "file token SSO (0600)")
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
@@ -133,11 +138,17 @@ func (o *options) run(ctx context.Context, stdin *os.File, stdout, stderr io.Wri
 		o.cfg.Password = string(pw)
 	}
 
+	if o.mcp {
+		o.cfg.Metadata = map[string]string{auth.ChannelHeader: auth.ChannelMCP}
+	}
 	c, err := client.Dial(ctx, o.cfg)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = c.Close() }()
+	if o.mcp { // stdout = protokol MCP; log hanya ke stderr
+		return mcp.New(c, version.Version, mcp.Options{}).Run(ctx, &sdk.StdioTransport{})
+	}
 	s := &session{c: c, out: stdout, errOut: stderr, format: o.format, timing: o.timing}
 
 	switch {

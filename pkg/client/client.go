@@ -32,6 +32,13 @@ type Config struct {
 	// TokenSource (SSO, lihat pkg/client/oauth) menggantikan login password:
 	// access token dikirim sebagai Bearer di setiap RPC dan di-refresh otomatis.
 	TokenSource oauth2.TokenSource
+	// NoLogin: tanpa login; setiap panggilan wajib membawa token lewat
+	// WithBearer (mis. gateway yang meneruskan token pemanggil).
+	NoLogin bool
+	// Metadata header gRPC tambahan di setiap RPC (mis. kanal "mcp").
+	Metadata map[string]string
+	// DialOptions opsi grpc tambahan (mis. dialer in-process).
+	DialOptions []grpc.DialOption
 }
 
 func (c Config) tlsEnabled() bool {
@@ -42,6 +49,15 @@ func (c Config) tlsEnabled() bool {
 type Client struct {
 	cl     *flightsql.Client
 	bearer func() (string, error)
+	md     []string
+}
+
+type bearerKey struct{}
+
+// WithBearer membuat panggilan dengan ctx ini memakai token (tanpa "Bearer ")
+// menggantikan kredensial Client.
+func WithBearer(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, bearerKey{}, "Bearer "+token)
 }
 
 // Dial membuka koneksi dan login (Handshake Basic → Bearer).
@@ -54,12 +70,19 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		}
 		creds = credentials.NewTLS(tc)
 	}
-	cl, err := flightsql.NewClientCtx(ctx, cfg.Addr, nil, nil, grpc.WithTransportCredentials(creds))
+	cl, err := flightsql.NewClientCtx(ctx, cfg.Addr, nil, nil, append([]grpc.DialOption{grpc.WithTransportCredentials(creds)}, cfg.DialOptions...)...)
 	if err != nil {
 		return nil, fmt.Errorf("client.Dial: %w", err)
 	}
+	var md []string
+	for k, v := range cfg.Metadata {
+		md = append(md, k, v)
+	}
+	if cfg.NoLogin {
+		return &Client{cl: cl, md: md, bearer: func() (string, error) { return "", errors.New("client: no bearer token in context") }}, nil
+	}
 	if cfg.TokenSource != nil {
-		return &Client{cl: cl, bearer: func() (string, error) {
+		return &Client{cl: cl, md: md, bearer: func() (string, error) {
 			t, err := cfg.TokenSource.Token()
 			if err != nil {
 				return "", fmt.Errorf("client: token: %w", err)
@@ -71,13 +94,13 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("client.Dial: login: %w", err), cl.Close())
 	}
-	md, _ := metadata.FromOutgoingContext(authCtx)
-	auth := md.Get("authorization")
+	out, _ := metadata.FromOutgoingContext(authCtx)
+	auth := out.Get("authorization")
 	if len(auth) == 0 {
 		return nil, errors.Join(errors.New("client.Dial: server returned no bearer token"), cl.Close())
 	}
 	b := auth[len(auth)-1]
-	return &Client{cl: cl, bearer: func() (string, error) { return b, nil }}, nil
+	return &Client{cl: cl, md: md, bearer: func() (string, error) { return b, nil }}, nil
 }
 
 func tlsConfig(cfg Config) (*tls.Config, error) {
@@ -103,11 +126,14 @@ func tlsConfig(cfg Config) (*tls.Config, error) {
 }
 
 func (c *Client) ctx(ctx context.Context) (context.Context, error) {
-	b, err := c.bearer()
-	if err != nil {
-		return nil, err
+	b, ok := ctx.Value(bearerKey{}).(string)
+	if !ok {
+		var err error
+		if b, err = c.bearer(); err != nil {
+			return nil, err
+		}
 	}
-	return metadata.AppendToOutgoingContext(ctx, "authorization", b), nil
+	return metadata.AppendToOutgoingContext(ctx, append([]string{"authorization", b}, c.md...)...), nil
 }
 
 // Query mengeksekusi sql dan mengembalikan stream hasil; pemanggil wajib
@@ -133,6 +159,33 @@ func (c *Client) Tables(ctx context.Context) (*flight.Reader, error) {
 	info, err := c.cl.GetTables(ctx, &flightsql.GetTablesOpts{})
 	if err != nil {
 		return nil, fmt.Errorf("client.Tables: %w", err)
+	}
+	return c.fetch(ctx, info)
+}
+
+// GetTables daftar tabel yang boleh dilihat pemanggil, opsional dengan
+// schema Arrow per tabel (opts.IncludeSchema).
+func (c *Client) GetTables(ctx context.Context, opts *flightsql.GetTablesOpts) (*flight.Reader, error) {
+	ctx, err := c.ctx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	info, err := c.cl.GetTables(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("client.GetTables: %w", err)
+	}
+	return c.fetch(ctx, info)
+}
+
+// Catalogs daftar catalog yang boleh dilihat pemanggil.
+func (c *Client) Catalogs(ctx context.Context) (*flight.Reader, error) {
+	ctx, err := c.ctx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	info, err := c.cl.GetCatalogs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("client.Catalogs: %w", err)
 	}
 	return c.fetch(ctx, info)
 }

@@ -1,4 +1,4 @@
-{{- if or .Values.policy .Values.classification .Values.reports .Values.ducklake.catalog }}
+{{- if or .Values.policy .Values.classification .Values.reports .Values.ducklake.catalog .Values.verifiedQueries }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -15,6 +15,10 @@ data:
   {{- end }}
   {{- with .Values.reports }}
   reports.yaml: |
+    {{- . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.verifiedQueries }}
+  verified-queries.yaml: |
     {{- . | nindent 4 }}
   {{- end }}
   {{- with .Values.ducklake }}

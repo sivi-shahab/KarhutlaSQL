@@ -13,6 +13,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/bankmega/karhutlasql/internal/accesslog"
@@ -26,7 +27,7 @@ import (
 
 // safeFunctions table function yang tidak membaca data di luar catalog dan
 // boleh dipakai tanpa izin admin. karhutla_* menegakkan izinnya sendiri.
-var safeFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST", "KARHUTLA_SESSIONS", "KARHUTLA_METRICS", "KARHUTLA_KILL_SESSION", "KARHUTLA_QUERY_HISTORY", "KARHUTLA_ACCESS_HISTORY", "KARHUTLA_ACCESS_HISTORY_RANGE", "KARHUTLA_REPORT_RUN", "KARHUTLA_REPORT_RUN_AT", "KARHUTLA_DQ_RESULTS", "KARHUTLA_CHARGEBACK"}
+var safeFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST", "KARHUTLA_SESSIONS", "KARHUTLA_METRICS", "KARHUTLA_KILL_SESSION", "KARHUTLA_QUERY_HISTORY", "KARHUTLA_ACCESS_HISTORY", "KARHUTLA_ACCESS_HISTORY_RANGE", "KARHUTLA_REPORT_RUN", "KARHUTLA_REPORT_RUN_AT", "KARHUTLA_DQ_RESULTS", "KARHUTLA_CHARGEBACK", "KARHUTLA_VERIFIED_QUERIES", "KARHUTLA_SEMANTIC_MODEL"}
 
 // writeKinds statement yang target tulisnya ditentukan sqlrewrite.
 var writeKinds = []string{"INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"}
@@ -50,6 +51,16 @@ type plan struct {
 	control bool
 	// hit diisi query: hasil dari result cache (audit statement_end).
 	hit *bool
+}
+
+// Channel kanal statement dari header gRPC auth.ChannelHeader ("" = klien biasa).
+func Channel(ctx context.Context) string {
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if v := md.Get(auth.ChannelHeader); len(v) > 0 {
+			return v[len(v)-1]
+		}
+	}
+	return ""
 }
 
 func names(a engine.Analysis) sqlrewrite.Names {
@@ -127,6 +138,9 @@ func (s *Server) authorize(ctx context.Context, sql string) (plan, error) {
 	}
 	p := s.opts.Policy.Policy()
 	pl := plan{sql: sql, limits: p.LimitsFor(id.Roles), control: id.HasRole(auth.RoleAdmin) && control(a)}
+	if Channel(ctx) == auth.ChannelMCP { // agen AI: profil ai_sandbox di atas role pemanggil
+		pl.limits, pl.control = pl.limits.Tighten(p.AgentLimits()), false
+	}
 	if pl.limits.SelectOnly && a.Kind != "SELECT" {
 		return plan{}, s.deny(ctx, a.Kind, sql, errors.New("role is SELECT-only"))
 	}

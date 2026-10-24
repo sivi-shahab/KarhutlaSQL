@@ -25,7 +25,7 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | github.com/spf13/pflag | BSD-3-Clause | Flag (dependensi cobra/viper) |
 | go.yaml.in/yaml/v3 | MIT / Apache-2.0 | Policy file (strict decode) |
 | golang.org/x/crypto | BSD-3-Clause | bcrypt |
-| golang.org/x/time | BSD-3-Clause | *(tidak dipakai: rate limit memakai token bucket sendiri, ADR 26)* |
+| golang.org/x/time | BSD-3-Clause | Dependensi go-sdk MCP (rate limit KarhutlaSQL tetap token bucket sendiri, ADR 26) |
 | github.com/google/uuid | BSD-3-Clause | Session/statement ID |
 | golang.org/x/term | BSD-3-Clause | REPL klien (line editing, history, prompt password) |
 | github.com/pganalyze/pg_query_go/v6 | BSD-3-Clause; libpg_query terbundel: BSD-3-Clause + PostgreSQL License (permisif, setara MIT/BSD) | Target tulis statement DML/DDL untuk authz (Fase 5, ADR 21); kandidat parser rewriter Fase 5b |
@@ -42,6 +42,10 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | github.com/go-logr/logr, github.com/go-logr/stdr | Apache-2.0 | Dependensi otel |
 | github.com/cenkalti/backoff/v5 | MIT | Retry exporter OTLP |
 | github.com/grpc-ecosystem/grpc-gateway/v2 | BSD-3-Clause | Dependensi exporter OTLP |
+| github.com/modelcontextprotocol/go-sdk | Apache-2.0 / MIT (transisi lisensi) | Server MCP (Fase 8c) |
+| github.com/google/jsonschema-go, github.com/segmentio/encoding, github.com/segmentio/asm | MIT | Dependensi go-sdk MCP |
+| github.com/yosida95/uritemplate/v3 | BSD-3-Clause | Dependensi go-sdk MCP |
+| google.golang.org/grpc/test/bufconn (bagian grpc) | Apache-2.0 | Listener gRPC in-process untuk MCP |
 | github.com/zalando/go-keyring | MIT | *(belum dipakai)* token store keyring klien (E-10); Fase 5 memakai file 0600 |
 
 ## Ekstensi DuckDB (image varian `lake`, Fase 8a)

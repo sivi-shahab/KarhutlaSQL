@@ -47,6 +47,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/server"
 	"github.com/bankmega/karhutlasql/internal/session"
 	"github.com/bankmega/karhutlasql/internal/sqlext"
+	"github.com/bankmega/karhutlasql/internal/verified"
 )
 
 const (
@@ -101,6 +102,7 @@ type envOpts struct {
 	dq        *dq.Store
 	dqMaxAge  time.Duration
 	cache     *cache.Cache
+	verified  *verified.Set
 }
 
 func startServer(t *testing.T, initSQL string) *testEnv {
@@ -126,7 +128,7 @@ func start(t testing.TB, o envOpts) *testEnv {
 	eng := o.engine
 	if eng == nil {
 		d, err := duckdb.Open(ctx, duckdb.Config{InitSQL: o.initSQL, AllowedDirectories: o.allowedDirs, StreamingBufferSize: "4MB", Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, History: history, AccessLog: o.accessLog, MaskKey: o.maskKey, DQ: o.dq, Quota: quotas,
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, History: history, AccessLog: o.accessLog, MaskKey: o.maskKey, DQ: o.dq, Quota: quotas, Verified: o.verified,
 				RunReport: func(ctx context.Context, name, asOf string) ([]any, error) { return srv.ReportRow(ctx, name, asOf) }})
 		}})
 		if err != nil {

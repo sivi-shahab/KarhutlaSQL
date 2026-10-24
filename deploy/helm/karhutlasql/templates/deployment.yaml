@@ -1,7 +1,7 @@
 {{- $secret := required "auth.existingSecret is required" .Values.auth.existingSecret -}}
 {{- if and .Values.oidc.issuer (not .Values.policy) }}{{ fail "oidc.issuer requires policy (allowlist & roles)" }}{{ end -}}
 {{- $lake := .Values.ducklake -}}
-{{- $config := or .Values.policy .Values.classification .Values.reports $lake.catalog -}}
+{{- $config := or .Values.policy .Values.classification .Values.reports $lake.catalog .Values.verifiedQueries -}}
 {{- $allowed := .Values.allowedDirectories -}}
 {{- if $lake.catalog }}{{ $allowed = append $allowed $lake.dataPath }}{{ end -}}
 apiVersion: apps/v1
@@ -22,7 +22,7 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
         prometheus.io/scheme: https # port admin ikut TLS server
-        checksum/policy: {{ printf "%s%s%s%s" .Values.policy .Values.classification .Values.reports (toJson $lake) | sha256sum }}
+        checksum/policy: {{ printf "%s%s%s%s%s" .Values.policy .Values.classification .Values.reports (toJson $lake) .Values.verifiedQueries | sha256sum }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -111,6 +111,16 @@ spec:
             {{- with $allowed }}
             - --allowed-directories={{ join "," . }}
             {{- end }}
+            {{- with .Values.mcp.port }}
+            - --mcp-port={{ . }}
+            - --mcp-max-rows={{ $.Values.mcp.maxRows }}
+            {{- with $.Values.mcp.resourceUrl }}
+            - --mcp-resource-url={{ . }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.verifiedQueries }}
+            - --verified-queries-file=/etc/karhutlasql/verified-queries.yaml
+            {{- end }}
             {{- if $lake.catalog }}
             - --init-sql-file=/etc/karhutlasql/init.sql
             - --duckdb-secrets-file=/etc/karhutlasql/secrets.yaml
@@ -160,6 +170,9 @@ spec:
           ports:
             - { name: flight, containerPort: 31337 }
             - { name: admin, containerPort: 9090 }
+            {{- with .Values.mcp.port }}
+            - { name: mcp, containerPort: {{ . }} }
+            {{- end }}
           readinessProbe:
             httpGet: { path: /healthz, port: admin, scheme: HTTPS }
             periodSeconds: 10

@@ -16,7 +16,8 @@ Server SQL analitik ringan: **Apache Arrow Flight SQL** di atas **DuckDB**, ditu
 | Kepatuhan | Access-history per kolom PII → Parquet WORM (retensi 10 th, DSAR export), residency guardrail, report run bertanda tangan untuk laporan OJK/SLIK (time travel snapshot DuckLake) |
 | Operasional | Session registry, kill session, resource group & statement queuing, rate limit, query timeout, admin via Flight DoAction |
 | Observabilitas | Prometheus `/metrics` + `karhutla_metrics()`, `karhutla_query_history()`, slow-query log, audit log JSON |
-| Roadmap v2 | MCP server, result cache Arrow IPC, OpenTelemetry |
+| Agen AI | Server MCP (stdio + Streamable HTTP/OAuth) dengan profil `ai_sandbox` dipaksakan, verified queries + semantic model |
+| Roadmap v2 | Bulk ingest `DoPut`, `PollFlightInfo`, backup bertingkat, Vault/HSM |
 
 ## Quick start
 

@@ -32,8 +32,10 @@ import (
 	"github.com/bankmega/karhutlasql/internal/auth/local"
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
 	"github.com/bankmega/karhutlasql/internal/authz"
+	"github.com/bankmega/karhutlasql/internal/catalogsync"
 	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/config"
+	"github.com/bankmega/karhutlasql/internal/dq"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/flightsql"
@@ -127,8 +129,12 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	} else {
 		log.Warn("four-eyes disabled: policy/classification changes activate on reload (dev only)")
 	}
+	var syncer *catalogsync.Syncer // diisi setelah engine dibuka; Trigger aman pada nil
 	gate := approval.New(gateDir, func(e approval.Event) {
 		auditLog.Emit(ctx, audit.Event{Type: audit.PolicyChange, User: e.By, Object: e.Document, Hash: e.Hash, Status: e.Status})
+		if e.Status == "activated" {
+			syncer.Trigger() // klasifikasi baru → properties UC
+		}
 	})
 	policy, err := newPolicy(cfg, log, gate)
 	if err != nil {
@@ -152,15 +158,27 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	if err != nil {
 		return err
 	}
-	var access *accesslog.Log
+	var (
+		access  *accesslog.Log
+		dqStore *dq.Store
+	)
 	if archive != nil {
 		access = accesslog.New(accesslog.Options{Store: archive})
+		if dqStore, err = dq.Open(ctx, archive); err != nil {
+			return err
+		}
+	}
+	if cfg.DQMaxAge == 0 {
+		log.Warn("DQ gate disabled (--dq-max-age 0): report runs do not require Great Expectations results")
 	}
 
 	sessions := session.NewRegistry(cfg.SessionIdleTimeout)
 	sched := scheduler.New()
 	history := session.NewHistory(queryHistorySize)
 	m := metrics.New(sessions.Counts, sched.Stats)
+	if dqStore != nil {
+		m.Registry.MustRegister(dqStore)
+	}
 	reports, signer, err := newReports(cfg, log)
 	if err != nil {
 		return err
@@ -173,7 +191,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	eng, err := duckdb.Open(ctx, duckdb.Config{Path: cfg.DatabaseFilename, InitSQL: initSQL,
 		AllowedDirectories: cfg.AllowedDirectories, Secrets: secrets,
 		Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, AccessLog: access, MaskKey: maskKey,
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, AccessLog: access, MaskKey: maskKey, DQ: dqStore,
 				RunReport: func(ctx context.Context, name string) ([]any, error) { return srv.ReportRow(ctx, name) }})
 		}})
 	if err != nil {
@@ -185,10 +203,18 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m, Policy: policy, Classification: cls,
 		Scheduler: sched, DefaultGroup: scheduler.Group{MaxConcurrent: cfg.MaxConcurrent, QueueSize: cfg.QueueSize, QueueTimeout: cfg.QueueTimeout},
 		History: history, SlowQuery: cfg.SlowQueryThreshold, Profiling: cfg.QueryProfiling, AccessLog: access,
-		Reports: reports, Signer: signer, Archive: archive,
+		Reports: reports, Signer: signer, Archive: archive, DQ: dqStore, DQMaxAge: cfg.DQMaxAge,
+		MetadataChanged: func() { syncer.Trigger() },
 	})
 	if err != nil {
 		return err
+	}
+	if cfg.UCEndpoint != "" {
+		syncer = catalogsync.New(catalogsync.NewClient(cfg.UCEndpoint, os.Getenv(cfg.UCTokenEnv)), catalogsync.Source{
+			Engine: eng, DQ: dqStore, Endpoint: advertisedEndpoint(cfg, tlsCfg != nil),
+			Tags: func(table string) map[string]string { return cls.Get().TableTags(table) },
+		}, auditLog)
+		m.Registry.MustRegister(syncer.Errors())
 	}
 	health := healthCheck(eng, cfg.HealthCheckQuery)
 	ai := interceptor.NewAuth(interceptor.AuthOptions{Local: authn, OIDC: oidcVerifier, Policy: policy, Audit: auditLog, Metrics: m, Log: log})
@@ -228,7 +254,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 			Stream:  []grpc.StreamServerInterceptor{ai.Stream(), rl.Stream(), si.Stream()},
 			Health:  health,
 			Drain:   server.DrainTimeout,
-			Actions: adminActions(adminOpts),
+			Actions: actions(adminOpts, srv),
 		}, log)
 		cancel()
 	}()
@@ -244,6 +270,15 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	}
 	defer func() { cancel(); <-accessDone }() // flush terakhir setelah server berhenti
 	go reloadOnSIGHUP(ctx, auditLog, log, gate)
+	if syncer != nil {
+		log.Info("unity catalog sync", "endpoint", cfg.UCEndpoint, "interval", cfg.UCSyncInterval.String())
+		syncDone := make(chan struct{})
+		go func() {
+			defer close(syncDone)
+			syncer.Run(ctx, cfg.UCSyncInterval, func(err error) { log.Warn("unity catalog sync failed; retrying", "err", err) })
+		}()
+		defer func() { cancel(); <-syncDone }() // sebelum engine ditutup
+	}
 	n := 1
 	if adminLis != nil {
 		n++
@@ -368,11 +403,27 @@ func newClassification(cfg config.Config, gate *approval.Gate) (*classification.
 	return cls, key, err
 }
 
-// adminActions DoAction admin (G-12) di atas operasi admin HTTP.
-func adminActions(o admin.Options) map[string]func(context.Context, []byte) ([]byte, error) {
+// advertisedEndpoint nilai karhutla.endpoint di Unity Catalog (K-02).
+func advertisedEndpoint(cfg config.Config, tls bool) string {
+	if cfg.UCAdvertisedEndpoint != "" {
+		return cfg.UCAdvertisedEndpoint
+	}
+	scheme := "grpc://"
+	if tls {
+		scheme = "grpc+tls://"
+	}
+	return scheme + cfg.Addr()
+}
+
+// actions DoAction tambahan: admin (G-12) di atas operasi admin HTTP, dan
+// runner GX (Q-03).
+func actions(o admin.Options, srv *flightsql.Server) map[string]func(context.Context, []byte) ([]byte, error) {
 	out := map[string]func(context.Context, []byte) ([]byte, error){}
 	for _, typ := range admin.Actions {
 		out[typ] = func(ctx context.Context, body []byte) ([]byte, error) { return o.Do(ctx, typ, body) }
+	}
+	for _, typ := range []string{flightsql.ActionDQSnapshot, flightsql.ActionDQPublish} {
+		out[typ] = func(ctx context.Context, body []byte) ([]byte, error) { return srv.DQAction(ctx, typ, body) }
 	}
 	return out
 }

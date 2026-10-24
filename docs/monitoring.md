@@ -18,6 +18,9 @@ client cert). Metric yang sama via SQL: `SELECT * FROM karhutla_metrics()`
 | `karhutla_queue_depth` / `karhutla_queue_running` | gauge | group (resource group) |
 | `karhutla_queue_wait_seconds` | histogram | group |
 | `karhutla_rate_limited_total` | counter | user |
+| `karhutla_dq_expectations_failed` | gauge | table, severity (`critical`/`warning`) — validasi GX terbaru |
+| `karhutla_dq_last_success_timestamp` | gauge | table — validasi terakhir tanpa kegagalan critical (alert "DQ basi" di Grafana) |
+| `karhutla_catalog_sync_errors_total` | counter | — operasi sinkron Unity Catalog yang gagal |
 
 Dev stack: `docker compose -f deploy/observability/compose.yaml up -d` →
 Grafana http://localhost:3000, dashboard **KarhutlaSQL** (sesi, statement
@@ -124,6 +127,8 @@ Body & hasil JSON; semua butuh role admin kecuali `health`:
 | `policy_status` | — |
 | `reload_policy` | `{"document": "policy" \| "classification"}` |
 | `approve_policy` | `{"document": "…", "hash": "…"}` |
+| `dq_snapshot` *(role `dq_runner`)* | `{"table": "c.s.t"}` → `{"table","snapshot_id"}` |
+| `dq_publish` *(role `dq_runner`)* | `{"table","snapshot_id","result": <Validation Result GX>}` |
 
 ```python
 import json, pyarrow.flight as fl

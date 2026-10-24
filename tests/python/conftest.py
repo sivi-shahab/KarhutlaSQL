@@ -85,7 +85,7 @@ def conn(server):
 
 KC_DIR = ROOT / "deploy" / "keycloak-dev"
 REALM = "karhutlasql"
-USERS = ("ana", "dian", "eve", "budi", "agent")
+USERS = ("ana", "dian", "eve", "budi", "agent", "svc_gx")
 
 
 def _post(url, data, headers=None, opener=None):
@@ -231,3 +231,59 @@ def gov_server(tmp_path_factory, keycloak, minio):
     info = next(gen)
     yield {**info, "policy": policy, "public_key": pub}
     next(gen, None)
+
+
+# --- Runner Great Expectations (Fase 6c) ---
+
+DQ_EXAMPLE = ROOT / "deploy" / "dq-example"
+
+
+def gx_run(server, kc, suite=DQ_EXAMPLE / "suites" / "warehouse.main.nasabah.json", result_format="SUMMARY"):
+    """Jalankan contoh runner GX sebagai svc_gx (dq_runner); hasil dq_publish."""
+    import sys
+    sys.path.insert(0, str(DQ_EXAMPLE))
+    from gx_checkpoint import run as gx_checkpoint
+    return gx_checkpoint(server["uri"], user_token(kc, "svc_gx"), str(suite), result_format=result_format)
+
+
+# --- Unity Catalog OSS (Fase 6c, acceptance #13) ---
+
+UC_IMAGE = "unitycatalog/unitycatalog@sha256:cdacdc5e7624795e7b2a18ece0d7357c5a1ec640db17fccb4d0fb208dd0d335b"  # v0.7.0
+
+
+@pytest.fixture(scope="session")
+def uc():
+    if not shutil.which("docker"):
+        pytest.skip("docker tidak tersedia")
+    port = _free_port()
+    name = f"karhutlasql-uc-{port}"
+    subprocess.run(["docker", "run", "-d", "--rm", "--name", name, "-p", f"127.0.0.1:{port}:8080", UC_IMAGE],
+                   check=True, capture_output=True)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        deadline = time.time() + 120
+        while True:
+            try:
+                urllib.request.urlopen(base + "/api/2.1/unity-catalog/catalogs", timeout=2).read()
+                break
+            except (urllib.error.URLError, ConnectionError, OSError):
+                if time.time() > deadline:
+                    pytest.fail("Unity Catalog tidak siap dalam 120 detik")
+                time.sleep(1)
+        yield {"url": base, "name": name}
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
+@pytest.fixture(scope="session")
+def uc_server(tmp_path_factory, keycloak, uc):
+    """Server OIDC + classification dev + sinkron Unity Catalog (four-eyes mati)."""
+    d = tmp_path_factory.mktemp("uc")
+    init = d / "init.sql"
+    init.write_text("ATTACH ':memory:' AS sandbox; CREATE TABLE sandbox.main.s (i BIGINT);\n")
+    yield from start_server(tmp_path_factory, d / "warehouse.duckdb", [
+        "--init-sql-file", str(init), "--policy-file", str(KC_DIR / "policy.yaml"),
+        "--classification-file", str(KC_DIR / "classification.yaml"), "--four-eyes=false",
+        "--oidc-issuer", keycloak["issuer"], "--oidc-audience", "karhutlasql",
+        "--uc-endpoint", uc["url"], "--uc-sync-interval", "1h"],
+        extra_env={"KARHUTLASQL_MASK_KEY": secrets.token_urlsafe(32)})

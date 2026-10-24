@@ -96,6 +96,14 @@ spec:
             {{- if .Values.reportSigning.existingSecret }}
             - --report-signing-key-file=/keys/report.key
             {{- end }}
+            - --dq-max-age={{ .Values.dq.maxAge }}
+            {{- with .Values.unityCatalog.endpoint }}
+            - --uc-endpoint={{ . }}
+            - --uc-sync-interval={{ $.Values.unityCatalog.syncInterval }}
+            {{- with $.Values.unityCatalog.advertisedEndpoint }}
+            - --uc-advertised-endpoint={{ . }}
+            {{- end }}
+            {{- end }}
             {{- with .Values.allowedDirectories }}
             - --allowed-directories={{ join "," . }}
             {{- end }}
@@ -123,6 +131,11 @@ spec:
             - name: KARHUTLASQL_ARCHIVE_SECRET_KEY
               valueFrom:
                 secretKeyRef: { name: {{ .Values.archive.existingSecret }}, key: secret-key }
+            {{- end }}
+            {{- with .Values.unityCatalog.existingSecret }}
+            - name: KARHUTLASQL_UC_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ . }}, key: uc-token }
             {{- end }}
           ports:
             - { name: flight, containerPort: 31337 }

@@ -15,6 +15,14 @@ roles:
     max_bytes: 104857600
     timeout: 60s
     resource_group: ai
+  # Runner Great Expectations (Q-02): hanya baca, antre di grup batch, NIK
+  # tidak di-mask agar expectation format NIK bisa dievaluasi (hasilnya
+  # disanitasi dq_publish).
+  dq_runner:
+    catalogs: { warehouse: [read] }
+    select_only: true
+    resource_group: batch
+    unmask: [pii.nik]
 # Kelas beban (G-08); role tanpa resource_group → grup default (flag --max-concurrent dst.).
 resource_groups:
   batch: { max_concurrent: 2, queue_size: 32, queue_timeout: 10m, timeout: 2h }
@@ -24,4 +32,5 @@ subjects:
   - { match: { claim: groups, equals: analyst }, roles: [analyst] }
   - { match: { claim: groups, equals: cabang }, roles: [cabang] }
   - { match: { claim: groups, equals: ai-agent }, roles: [ai_sandbox] }
+  - { match: { claim: groups, equals: dq-runner }, roles: [dq_runner] }
   - { match: { user: admin }, roles: [admin] }

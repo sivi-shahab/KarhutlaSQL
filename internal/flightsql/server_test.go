@@ -33,6 +33,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
 	"github.com/bankmega/karhutlasql/internal/authz"
 	"github.com/bankmega/karhutlasql/internal/classification"
+	"github.com/bankmega/karhutlasql/internal/dq"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
@@ -92,6 +93,8 @@ type envOpts struct {
 	reports   map[string]report.Def
 	signer    *report.Signer
 	archive   objstore.Store
+	dq        *dq.Store
+	dqMaxAge  time.Duration
 }
 
 func startServer(t *testing.T, initSQL string) *testEnv {
@@ -112,7 +115,7 @@ func start(t testing.TB, o envOpts) *testEnv {
 	eng := o.engine
 	if eng == nil {
 		d, err := duckdb.Open(ctx, duckdb.Config{InitSQL: o.initSQL, Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, History: history, AccessLog: o.accessLog, MaskKey: o.maskKey,
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, History: history, AccessLog: o.accessLog, MaskKey: o.maskKey, DQ: o.dq,
 				RunReport: func(ctx context.Context, name string) ([]any, error) { return srv.ReportRow(ctx, name) }})
 		}})
 		if err != nil {
@@ -139,7 +142,7 @@ func start(t testing.TB, o envOpts) *testEnv {
 	srv, err = New(eng, log, Options{
 		QueryTimeout: o.queryTimeout, Audit: al, Metrics: m, Policy: policy, Classification: o.classification,
 		Scheduler: sched, DefaultGroup: o.group, History: history, SlowQuery: o.slowQuery, Profiling: true, AccessLog: o.accessLog,
-		Reports: o.reports, Signer: o.signer, Archive: o.archive,
+		Reports: o.reports, Signer: o.signer, Archive: o.archive, DQ: o.dq, DQMaxAge: o.dqMaxAge,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +158,10 @@ func start(t testing.TB, o envOpts) *testEnv {
 		done <- server.Serve(ctx, lis, srv, server.Options{
 			TLS: o.tls, Unary: []grpc.UnaryServerInterceptor{ai.Unary(), si.Unary()}, Stream: []grpc.StreamServerInterceptor{ai.Stream(), si.Stream()},
 			Health: func(context.Context) error { return nil }, Drain: 5 * time.Second,
+			Actions: map[string]func(context.Context, []byte) ([]byte, error){
+				ActionDQSnapshot: func(ctx context.Context, b []byte) ([]byte, error) { return srv.DQAction(ctx, ActionDQSnapshot, b) },
+				ActionDQPublish:  func(ctx context.Context, b []byte) ([]byte, error) { return srv.DQAction(ctx, ActionDQPublish, b) },
+			},
 		}, log)
 	}()
 

@@ -100,26 +100,30 @@ func (s *Server) runReport(ctx context.Context, def report.Def, m *report.Manife
 	}
 	defer func() { _ = sn.Close() }()
 
-	// Sidik data sumber pada transaksi ini: jumlah baris + jumlah hash baris
-	// (tidak bergantung urutan). Hanya digest; tidak ada nilai yang keluar.
+	// Sidik data sumber pada transaksi ini (lihat fingerprint).
 	if m.Engine, err = scalar(ctx, sn, "SELECT version()"); err != nil {
 		return ReportRun{}, err
 	}
 	h := sha256.New()
 	h.Write([]byte("duckdb " + m.Engine))
+	snaps := map[string]string{}
 	for _, t := range tables {
-		parts := strings.Split(t, ".")
-		for i := range parts {
-			parts[i] = classification.Ident(parts[i])
-		}
-		fp, err := scalar(ctx, sn, fmt.Sprintf("SELECT 'rows:' || count(*) || ',hash:' || coalesce(sum(hash(x)), 0) FROM %s x", strings.Join(parts, ".")))
+		fp, err := fingerprint(ctx, sn, t)
 		if err != nil {
 			return ReportRun{}, err
 		}
 		m.Tables[t] = fp
+		snaps[t] = tableSnapshotID(m.Engine, t, fp)
 		h.Write([]byte("\n" + t + "=" + fp))
 	}
 	m.SnapshotID = hex.EncodeToString(h.Sum(nil))[:32]
+
+	// DQ gate (Q-05): hasil GX terbaru tiap tabel sumber pada data yang sama.
+	if s.opts.DQ != nil && s.opts.DQMaxAge > 0 {
+		if m.DQValidates, err = s.opts.DQ.Gate(snaps, s.opts.DQMaxAge, id.Source+":"+id.Subject); err != nil {
+			return ReportRun{}, fmt.Errorf("%w: report gate failed: %w", sqlext.ErrFailedPrecondition, err)
+		}
+	}
 
 	for i, a := range def.Asserts {
 		v, err := scalar(sqlext.WithMaskNonce(ctx, asserts[i].nonce), sn, asserts[i].sql)
@@ -165,6 +169,21 @@ func (s *Server) runReport(ctx context.Context, def report.Def, m *report.Manife
 		s.opts.AccessLog.Append(pl.access(base)...)
 	}
 	return run, nil
+}
+
+// fingerprint sidik isi tabel pada transaksi sn: jumlah baris + jumlah hash
+// baris (tidak bergantung urutan). Hanya digest; tidak ada nilai yang keluar.
+func fingerprint(ctx context.Context, sn engine.Snapshot, table string) (string, error) {
+	parts := strings.Split(table, ".")
+	for i := range parts {
+		parts[i] = classification.Ident(parts[i])
+	}
+	return scalar(ctx, sn, fmt.Sprintf("SELECT 'rows:' || count(*) || ',hash:' || coalesce(sum(hash(x)), 0) FROM %s x", strings.Join(parts, ".")))
+}
+
+// tableSnapshotID ID snapshot satu tabel (pengikat hasil DQ ke data, Q-03).
+func tableSnapshotID(engineVersion, table, fp string) string {
+	return report.SHA256([]byte("duckdb " + engineVersion + "\n" + table + "=" + fp))[:32]
 }
 
 // scalar nilai tunggal (kolom pertama baris pertama) sebagai teks.

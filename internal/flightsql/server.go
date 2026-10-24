@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/authz"
 	"github.com/bankmega/karhutlasql/internal/classification"
+	"github.com/bankmega/karhutlasql/internal/dq"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/metrics"
 	"github.com/bankmega/karhutlasql/internal/objstore"
@@ -62,6 +64,13 @@ type Options struct {
 	Reports map[string]report.Def
 	Signer  *report.Signer
 	Archive objstore.Store
+	// DQ hasil validasi GX (Q-03..Q-05); nil = dq_publish ditolak & tanpa gate.
+	DQ *dq.Store
+	// MetadataChanged dipanggil setelah DDL sukses & dq_publish (pemicu
+	// sinkron Unity Catalog, K-01); tidak boleh memblokir.
+	MetadataChanged func()
+	// DQMaxAge umur maksimum validasi untuk DQ gate report; 0 = gate mati.
+	DQMaxAge time.Duration
 	// Profiling isi peak memory & plan hash history dari profiling DuckDB
 	// (+~1–5 ms per statement, ADR 26).
 	Profiling bool
@@ -275,6 +284,9 @@ func (s *Server) DoPutPreparedStatementUpdate(ctx context.Context, cmd fsql.Prep
 // slot resource group, dan mengembalikan ctx eksekusi (timeout
 // server/role/grup, nonce mask, sink statistik), plan (SQL yang dieksekusi)
 // serta end yang wajib dipanggil tepat sekali bila err nil.
+// ddlKinds jenis statement yang mengubah metadata katalog.
+var ddlKinds = []string{"CREATE", "DROP", "ALTER", "ATTACH", "DETACH"}
+
 func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, plan, func(rows, bytes int64, err error), error) {
 	ss, err := sess(ctx)
 	if err != nil {
@@ -323,6 +335,9 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 			hq.Duration = time.Since(tExec)
 		}
 		s.opts.History.Add(hq)
+		if s.opts.MetadataChanged != nil && fin.Status == codes.OK.String() && slices.Contains(ddlKinds, pl.final.Kind) {
+			s.opts.MetadataChanged()
+		}
 		if s.opts.AccessLog != nil && !tExec.IsZero() {
 			base := accesslog.Record{Time: t0, RequestID: hq.RequestID, SessionID: ss.ID, User: id.Subject, Source: id.Source,
 				Kind: kind, Status: fin.Status, Rows: rows, SQLHash: ev.SQLHash, SQL: ev.SQL}

@@ -14,6 +14,9 @@
     },
     {
       "name": "ai-agent"
+    },
+    {
+      "name": "dq-runner"
     }
   ],
   "users": [
@@ -73,6 +76,17 @@
       "lastName": "Dev",
       "groups": [
         "/ai-agent"
+      ]
+    },
+    {
+      "username": "svc_gx",
+      "enabled": true,
+      "email": "svc_gx@bankmega.com",
+      "emailVerified": true,
+      "firstName": "GX",
+      "lastName": "Runner",
+      "groups": [
+        "/dq-runner"
       ]
     }
   ],

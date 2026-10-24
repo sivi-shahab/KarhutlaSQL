@@ -7,3 +7,4 @@ columns:
   warehouse.main.nasabah.nik: pii.nik
   warehouse.main.nasabah.phone: pii.phone
   warehouse.main.nasabah.saldo: fin.balance
+  sandbox.main.t.nik: pii.nik          # acceptance #13 (properties Unity Catalog)

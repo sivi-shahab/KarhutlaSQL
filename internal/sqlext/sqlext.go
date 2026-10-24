@@ -25,6 +25,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/classification"
+	"github.com/bankmega/karhutlasql/internal/dq"
 	"github.com/bankmega/karhutlasql/internal/session"
 )
 
@@ -44,6 +45,8 @@ type Deps struct {
 	History  *session.History
 	// AccessLog sumber karhutla_access_history(); nil = fungsi menolak.
 	AccessLog *accesslog.Log
+	// DQ sumber karhutla_dq_results(); nil = fungsi menolak.
+	DQ *dq.Store
 	// RunReport menjalankan report sebagai identitas di ctx (G-10); hasil
 	// satu baris kolom reportCols. nil = fungsi menolak.
 	RunReport func(ctx context.Context, name string) ([]any, error)
@@ -68,6 +71,7 @@ func Register(_ context.Context, conn *sql.Conn, d Deps) error {
 		"karhutla_metrics":        table(metricCols, nil, nil, d.metrics),
 		"karhutla_query_history":  table(historyCols, nil, nil, d.history),
 		"karhutla_access_history": table(accessCols, nil, nil, d.access),
+		"karhutla_dq_results":     table(dqCols, nil, nil, d.dqResults),
 		// Nama terpisah: duckdb-go gagal bila named argument tidak diberikan dan
 		// DuckDB mengabaikan registrasi overload kedua.
 		"karhutla_report_run":           table(reportCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, nil, d.report),
@@ -139,6 +143,12 @@ var (
 		{"report_id", duckdb.TYPE_VARCHAR}, {"name", duckdb.TYPE_VARCHAR}, {"snapshot_id", duckdb.TYPE_VARCHAR},
 		{"rows", duckdb.TYPE_BIGINT}, {"location", duckdb.TYPE_VARCHAR}, {"result_sha256", duckdb.TYPE_VARCHAR},
 		{"manifest_sha256", duckdb.TYPE_VARCHAR},
+	}
+	dqCols = []col{
+		{"table_name", duckdb.TYPE_VARCHAR}, {"suite", duckdb.TYPE_VARCHAR}, {"run_id", duckdb.TYPE_VARCHAR},
+		{"validation_id", duckdb.TYPE_VARCHAR}, {"snapshot_id", duckdb.TYPE_VARCHAR}, {"success", duckdb.TYPE_BOOLEAN},
+		{"evaluated", duckdb.TYPE_BIGINT}, {"failed_critical", duckdb.TYPE_BIGINT}, {"failed_warning", duckdb.TYPE_BIGINT},
+		{"validated_at", duckdb.TYPE_TIMESTAMP_TZ}, {"run_by", duckdb.TYPE_VARCHAR}, {"results", duckdb.TYPE_VARCHAR},
 	}
 	killCols   = []col{{"session_id", duckdb.TYPE_VARCHAR}, {"killed", duckdb.TYPE_BOOLEAN}}
 	metricCols = []col{{"name", duckdb.TYPE_VARCHAR}, {"labels", duckdb.TYPE_VARCHAR}, {"type", duckdb.TYPE_VARCHAR}, {"value", duckdb.TYPE_DOUBLE}}
@@ -307,6 +317,23 @@ func (d Deps) access(ctx context.Context, args []any, _ map[string]any) ([][]any
 			continue
 		}
 		out = append(out, r.Values())
+	}
+	return out, nil
+}
+
+// dqResults: karhutla_dq_results() — semua hasil validasi GX tersanitasi
+// (tanpa nilai baris, Q-04); terbuka untuk semua user terautentikasi.
+func (d Deps) dqResults(ctx context.Context, _ []any, _ map[string]any) ([][]any, error) {
+	if _, err := identity(ctx); err != nil {
+		return nil, err
+	}
+	if d.DQ == nil {
+		return nil, errors.New("karhutla_dq_results: data quality store is not configured (--archive-dir / --archive-s3-*)")
+	}
+	var out [][]any
+	for _, v := range d.DQ.All() {
+		out = append(out, []any{v.Table, v.Suite, v.RunID, v.ID, v.SnapshotID, v.Success, v.Evaluated, v.FailedCritical,
+			v.FailedWarning, v.ValidatedAt, v.RunBy, v.Results})
 	}
 	return out, nil
 }

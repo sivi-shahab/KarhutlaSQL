@@ -30,6 +30,9 @@ const (
 	PolicyChange        = "policy_change"
 	ReportRun           = "report_run"
 	AccessHistoryExport = "access_history_export"
+	// Data quality & katalog (Fase 6c).
+	DQPublished = "dq_published"
+	CatalogSync = "catalog_sync"
 )
 
 // Event satu baris audit (JSON). Field kosong dihilangkan.

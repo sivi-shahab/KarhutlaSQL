@@ -10,7 +10,7 @@ import pyarrow.flight as fl
 import pyarrow.fs as pafs
 import pytest
 
-from conftest import BUCKET, PASSWORD, ROOT, USER, bearer_conn, run, user_token
+from conftest import BUCKET, PASSWORD, ROOT, USER, bearer_conn, gx_run, run, user_token
 
 CLIENT = ROOT / "bin" / "karhutlasql-client"
 
@@ -59,6 +59,7 @@ def test_acceptance7_access_history(gov_server, keycloak, minio):
 
 
 def test_acceptance10_report_signed_and_verified(gov_server, keycloak, minio, tmp_path):
+    assert gx_run(gov_server, keycloak)["failed_critical"] == 0  # DQ gate (Q-05)
     with bearer_conn(gov_server, user_token(keycloak, "dian")) as c:
         (report_id, name, snapshot, rows, location, result_sha, _), = run(c, "CALL karhutla_report_run('slik_bulanan')")
     assert name == "slik_bulanan" and rows == 2 and location.startswith("reports/slik_bulanan/")

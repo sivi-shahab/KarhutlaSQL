@@ -2,6 +2,9 @@
 #   export KARHUTLASQL_PASSWORD=...        # tidak ada default
 #   docker compose -f deploy/compose/compose.yaml up -d server
 #   docker compose -f deploy/compose/compose.yaml run --rm client
+# Unity Catalog OSS (Fase 6c, profile uc): jalankan server dengan
+#   --uc-endpoint http://unity-catalog:8080
+#   docker compose -f deploy/compose/compose.yaml --profile uc up -d unity-catalog
 services:
   server:
     image: karhutlasql:dev
@@ -23,6 +26,12 @@ services:
     depends_on: [server]
     stdin_open: true
     tty: true
+
+  unity-catalog:
+    # v0.7.0 (ADR 13). Tanpa kredensial bucket KarhutlaSQL: cermin metadata saja.
+    image: unitycatalog/unitycatalog@sha256:cdacdc5e7624795e7b2a18ece0d7357c5a1ec640db17fccb4d0fb208dd0d335b
+    profiles: [uc]
+    ports: ["127.0.0.1:8080:8080"]
 
 volumes:
   data: {}

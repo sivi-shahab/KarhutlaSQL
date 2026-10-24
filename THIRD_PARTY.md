@@ -67,8 +67,8 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 
 | Komponen | Lisensi | Kegunaan |
 |---|---|---|
-| Great Expectations / GX Core | Apache-2.0 | Eksekusi expectation di pipeline Python; hasil dikirim via `dq_publish` |
-| Unity Catalog OSS (server) | Apache-2.0 | Katalog metadata, diakses via REST dengan `net/http` (tanpa SDK) |
+| Great Expectations / GX Core 1.24 | Apache-2.0 | Eksekusi expectation di pipeline Python (`deploy/dq-example/`, integration test); hasil dikirim via `dq_publish` |
+| Unity Catalog OSS 0.7.0 (image `unitycatalog/unitycatalog`) | Apache-2.0 | Katalog metadata, diakses via REST dengan `net/http` (tanpa SDK); container di compose & integration test |
 | DuckDB extension `uc_catalog` *(Could, K-05)* | verifikasi saat spike | ATTACH tabel Delta milik UC |
 
 ## Catatan kepatuhan

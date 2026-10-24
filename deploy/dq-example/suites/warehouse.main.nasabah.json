@@ -1,0 +1,10 @@
+{
+  "name": "warehouse.main.nasabah",
+  "expectations": [
+    {"type": "expect_table_row_count_to_be_between", "kwargs": {"min_value": 1}, "meta": {"severity": "critical"}},
+    {"type": "expect_column_values_to_not_be_null", "kwargs": {"column": "nik"}, "meta": {"severity": "critical"}},
+    {"type": "expect_column_values_to_match_regex", "kwargs": {"column": "nik", "regex": "^[0-9]{16}$"}, "meta": {"severity": "critical"}},
+    {"type": "expect_column_values_to_be_unique", "kwargs": {"column": "nik"}, "meta": {"severity": "critical"}},
+    {"type": "expect_column_values_to_be_in_set", "kwargs": {"column": "branch_code", "value_set": ["0123", "0456"]}, "meta": {"severity": "warning"}}
+  ]
+}

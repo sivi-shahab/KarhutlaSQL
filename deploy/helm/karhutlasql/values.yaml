@@ -47,6 +47,20 @@ reports: ""
 reportSigning:
   existingSecret: ""
 
+# DQ gate report run (Q-05): validasi GX tiap tabel sumber harus lebih muda
+# dari ini dan pada data yang sama; "0" = gate mati.
+dq:
+  maxAge: 26h
+
+# Sinkron metadata satu arah ke Unity Catalog OSS (K-01..K-04). UC tidak
+# boleh punya kredensial bucket KarhutlaSQL (ADR 13). Token opsional: key
+# `uc-token` di existingSecret.
+unityCatalog:
+  endpoint: ""            # mis. http://unity-catalog:8080; kosong = mati
+  syncInterval: 15m
+  advertisedEndpoint: ""  # karhutla.endpoint; kosong = grpc+tls://<host>:31337
+  existingSecret: ""
+
 # Residency (G-07): path/prefix URL yang boleh diakses DuckDB.
 allowedDirectories: []
 

@@ -63,6 +63,14 @@ type Config struct {
 	// Report run (G-10).
 	ReportsFile, ReportSigningKeyFile string
 
+	// Data quality (Q-05): umur maksimum validasi GX untuk DQ gate report; 0 = gate mati.
+	DQMaxAge time.Duration
+
+	// Sinkron Unity Catalog (K-01..K-04); UCEndpoint kosong = mati.
+	UCEndpoint, UCTokenEnv string
+	UCSyncInterval         time.Duration
+	UCAdvertisedEndpoint   string // karhutla.endpoint; kosong = dari host:port
+
 	// Four-eyes policy/classification (G-11).
 	FourEyes bool
 	StateDir string
@@ -128,6 +136,11 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.Duration("access-log-flush-interval", 30*time.Second, "interval flush access-history ke arsip")
 	fs.String("reports-file", "", "definisi report (reports.yaml) untuk karhutla_report_run()")
 	fs.String("report-signing-key-file", "", "kunci privat Ed25519 PKCS#8 PEM (0600) penanda tangan manifest report")
+	fs.Duration("dq-max-age", 26*time.Hour, "DQ gate report: validasi GX tiap tabel sumber harus lebih muda dari ini; 0 = gate mati")
+	fs.String("uc-endpoint", "", "URL Unity Catalog OSS (mis. http://uc:8080) untuk sinkron metadata satu arah; kosong = mati")
+	fs.String("uc-token-env", "KARHUTLASQL_UC_TOKEN", "nama env var bearer token Unity Catalog (opsional)")
+	fs.Duration("uc-sync-interval", 15*time.Minute, "interval sinkron penuh ke Unity Catalog")
+	fs.String("uc-advertised-endpoint", "", "endpoint Flight SQL untuk property karhutla.endpoint; kosong = grpc[+tls]://host:port")
 	fs.Bool("four-eyes", true, "perubahan policy/classification aktif setelah 2 persetujuan admin berbeda (G-11)")
 	fs.String("state-dir", "", "direktori state server (persetujuan policy, 0700); default <dir database>/karhutlasql-state")
 	fs.StringSlice("allowed-directories", nil, "path/prefix URL yang boleh diakses DuckDB (COPY/read_*/ATTACH), mis. /data/export/,s3://lake/; selain itu ditolak")
@@ -198,6 +211,11 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		AccessLogFlushInterval: v.GetDuration("access-log-flush-interval"),
 		AllowedDirectories:     v.GetStringSlice("allowed-directories"),
 		FourEyes:               v.GetBool("four-eyes"),
+		DQMaxAge:               v.GetDuration("dq-max-age"),
+		UCEndpoint:             v.GetString("uc-endpoint"),
+		UCTokenEnv:             v.GetString("uc-token-env"),
+		UCSyncInterval:         v.GetDuration("uc-sync-interval"),
+		UCAdvertisedEndpoint:   v.GetString("uc-advertised-endpoint"),
 		ReportsFile:            v.GetString("reports-file"),
 		ReportSigningKeyFile:   v.GetString("report-signing-key-file"),
 		StateDir:               v.GetString("state-dir"),
@@ -257,6 +275,9 @@ func (c Config) validate() error {
 	}
 	if c.ArchiveRetention <= 0 || c.AccessLogFlushInterval <= 0 {
 		errs = append(errs, errors.New("archive-retention and access-log-flush-interval must be > 0"))
+	}
+	if c.DQMaxAge < 0 || c.UCSyncInterval <= 0 {
+		errs = append(errs, errors.New("dq-max-age must be >= 0 and uc-sync-interval > 0"))
 	}
 	if c.FourEyes && c.StateDir == "" && (c.PolicyFile != "" || c.ClassificationFile != "") {
 		errs = append(errs, errors.New("four-eyes with an in-memory database requires --state-dir (approvals must survive restart)"))

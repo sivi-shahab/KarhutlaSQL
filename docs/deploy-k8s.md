@@ -25,6 +25,8 @@ helm install kq deploy/helm/karhutlasql \
 | `fourEyes` | `true` | ConfigMap policy/classification baru (restart) menjadi pending sampai 2 admin menyetujui ([policy](policy.md#four-eyes-g-11)); state di PVC |
 | `archive.s3.*`, `archive.existingSecret`, `archive.retention` | kosong | arsip access-history & report di bucket ber-object-lock; Secret key `access-key`, `secret-key` |
 | `reports`, `reportSigning.existingSecret` | kosong | isi reports.yaml; Secret key `report.key` (disalin ke emptyDir 0600) |
+| `dq.maxAge` | `26h` | DQ gate report run (validasi GX per tabel sumber); `"0"` = mati |
+| `unityCatalog.endpoint`, `.syncInterval`, `.advertisedEndpoint`, `.existingSecret` | kosong / `15m` | sinkron metadata ke Unity Catalog OSS; Secret key `uc-token` (opsional) |
 | `allowedDirectories` | `[]` | path/prefix URL yang boleh diakses DuckDB (G-07) |
 | `extraArgs` | `[]` | flag server tambahan |
 | `persistence.size` / `storageClass` | `10Gi` / default | |

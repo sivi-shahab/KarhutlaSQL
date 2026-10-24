@@ -150,6 +150,9 @@ func (a *Authenticator) Verify(token string) (auth.Identity, error) {
 		jwt.WithAudience(Audience),
 		jwt.WithExpirationRequired(),
 		jwt.WithIssuedAt(),
+		// Toleransi jam mundur (mis. sinkronisasi NTP/WSL) seperti ClockSkew OIDC:
+		// tanpa ini token yang baru diterbitkan bisa ditolak "iat di masa depan".
+		jwt.WithLeeway(time.Minute),
 		jwt.WithTimeFunc(a.now),
 	)
 	if err != nil {

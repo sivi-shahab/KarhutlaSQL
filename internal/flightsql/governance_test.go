@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
 	"github.com/golang-jwt/jwt/v5"
@@ -28,6 +30,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
 	"github.com/bankmega/karhutlasql/internal/authz"
 	"github.com/bankmega/karhutlasql/internal/classification"
+	"github.com/bankmega/karhutlasql/internal/dq"
 	"github.com/bankmega/karhutlasql/internal/objstore"
 	"github.com/bankmega/karhutlasql/internal/report"
 )
@@ -46,11 +49,13 @@ roles:
     select_only: true
     max_rows: 3
     max_bytes: 200000
+  dq_runner:  { catalogs: { warehouse: [read] }, select_only: true, unmask: [pii.nik] }
 subjects:
   - { match: { claim: groups, equals: ops }, roles: [admin] }
   - { match: { claim: groups, equals: analyst }, roles: [analyst] }
   - { match: { claim: groups, equals: cabang }, roles: [cabang] }
   - { match: { claim: groups, equals: agent }, roles: [ai_sandbox] }
+  - { match: { claim: groups, equals: dq }, roles: [dq_runner] }
 `
 
 const govClassification = `
@@ -81,7 +86,7 @@ type govEnv struct {
 	secret  string // prefix NIK mentah, acak per env: tidak bisa ditebak query
 }
 
-func startGov(t testing.TB) *govEnv {
+func startGov(t testing.TB, mods ...func(*envOpts)) *govEnv {
 	t.Helper()
 	idp := newIdP(t)
 	v, err := oidc.New(context.Background(), oidc.Config{Issuer: idp.srv.URL, Audience: "karhutlasql", ClockSkew: time.Minute})
@@ -104,8 +109,12 @@ func startGov(t testing.TB) *govEnv {
 	archive := objstore.Dir(t.TempDir())
 	al := accesslog.New(accesslog.Options{Store: archive})
 	signer, pub := testSigner(t)
-	env := start(t, envOpts{initSQL: strings.ReplaceAll(govInit, "{{SECRET}}", secret), policy: authz.Static(p), oidc: v, classification: cls,
-		maskKey: []byte("0123456789abcdef0123456789abcdef"), accessLog: al, archive: archive, signer: signer, reports: govReports})
+	o := envOpts{initSQL: strings.ReplaceAll(govInit, "{{SECRET}}", secret), policy: authz.Static(p), oidc: v, classification: cls,
+		maskKey: []byte("0123456789abcdef0123456789abcdef"), accessLog: al, archive: archive, signer: signer, reports: govReports}
+	for _, m := range mods {
+		m(&o)
+	}
+	env := start(t, o)
 	tok := map[string]string{}
 	for user, claims := range map[string]jwt.MapClaims{
 		"ops":     {"groups": []string{"ops"}},
@@ -113,6 +122,7 @@ func startGov(t testing.TB) *govEnv {
 		"cabang":  {"groups": []string{"cabang"}, "branch": "0123"},
 		"nobr":    {"groups": []string{"cabang"}},
 		"agent":   {"groups": []string{"agent"}},
+		"gx":      {"groups": []string{"dq"}},
 	} {
 		claims["email"], claims["sid"], claims["preferred_username"] = user+"@bankmega.com", "s-"+user, user
 		tok[user] = idp.token(t, claims)
@@ -425,5 +435,112 @@ func TestReportRun(t *testing.T) {
 	}
 	if strings.Join(statuses, ",") != "OK,OK,FailedPrecondition,PermissionDenied" {
 		t.Errorf("report_run audit %v", statuses)
+	}
+}
+
+func TestDQPublishAndGate(t *testing.T) {
+	archive := objstore.Dir(t.TempDir())
+	store, err := dq.Open(context.Background(), archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := startGov(t, func(o *envOpts) { o.dq, o.dqMaxAge = store, time.Hour })
+	action := func(user, typ string, body any) (map[string]any, error) {
+		b, _ := json.Marshal(body)
+		st, err := g.cl.Client.DoAction(bearer(g.tok[user]), &flight.Action{Type: typ, Body: b})
+		if err != nil {
+			return nil, err
+		}
+		r, err := st.Recv()
+		if err != nil {
+			return nil, err
+		}
+		var out map[string]any
+		return out, json.Unmarshal(r.Body, &out)
+	}
+	const tbl = "warehouse.main.nasabah"
+	snap, err := action("gx", ActionDQSnapshot, map[string]string{"table": tbl})
+	if err != nil || snap["table"] != tbl || len(snap["snapshot_id"].(string)) != 32 {
+		t.Fatalf("snapshot %v %v", snap, err)
+	}
+	for _, c := range []struct {
+		user, table string
+		code        codes.Code
+	}{
+		{"analyst", tbl, codes.PermissionDenied},         // bukan dq_runner
+		{"gx", "sandbox.main.s", codes.PermissionDenied}, // dq_runner tanpa izin baca
+		{"gx", "nasabah", codes.InvalidArgument},
+	} {
+		if _, err := action(c.user, ActionDQSnapshot, map[string]string{"table": c.table}); status.Code(err) != c.code {
+			t.Errorf("%s %s: %v, want %v", c.user, c.table, err, c.code)
+		}
+	}
+
+	fixture, err := os.ReadFile("../dq/testdata/gx_result_complete.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publish := func(snapshot string, result json.RawMessage) (map[string]any, error) {
+		return action("gx", ActionDQPublish, map[string]any{"table": tbl, "snapshot_id": snapshot, "result": result})
+	}
+	if _, err := publish("stale", fixture); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("stale snapshot: %v", err)
+	}
+	if _, err := publish(snap["snapshot_id"].(string), json.RawMessage(`{"success":true}`)); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("invalid result: %v", err)
+	}
+	failed, err := publish(snap["snapshot_id"].(string), fixture)
+	if err != nil || failed["failed_critical"] != 3.0 {
+		t.Fatalf("publish failing: %v %v", failed, err)
+	}
+	runReport := func() error { _, err := g.rows("analyst", "CALL karhutla_report_run('nasabah_cabang')"); return err }
+	if err := runReport(); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "3 failed critical") {
+		t.Errorf("gate on failing validation: %v", err)
+	}
+	ok, err := publish(snap["snapshot_id"].(string), json.RawMessage(`{"success":true,"results":[
+		{"success":true,"expectation_config":{"type":"expect_column_values_to_not_be_null","kwargs":{"column":"nik"}},"result":{"element_count":10}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := g.rows("analyst", "CALL karhutla_report_run('nasabah_cabang')")
+	if err != nil {
+		t.Fatalf("report after passing validation: %v", err)
+	}
+	prefix := strings.Split(got[0], "|")[4]
+	mb, _ := g.archive.Get(context.Background(), prefix+"manifest.json")
+	var m report.Manifest
+	if err := json.Unmarshal(mb, &m); err != nil || len(m.DQValidates) != 1 || m.DQValidates[0] != ok["validation_id"] {
+		t.Errorf("manifest dq_validation_ids = %v (%v), want %v", m.DQValidates, err, ok["validation_id"])
+	}
+
+	// karhutla_dq_results(): terbuka untuk user biasa, tanpa nilai baris.
+	rows, err := g.rows("analyst", "SELECT table_name, success, failed_critical, results FROM karhutla_dq_results() ORDER BY validated_at")
+	if err != nil || len(rows) != 2 || !strings.HasPrefix(rows[0], tbl+"|false|3|") || !strings.HasPrefix(rows[1], tbl+"|true|0|") {
+		t.Fatalf("dq results %v %v", rows, err)
+	}
+	keys, _ := archive.List(context.Background(), dq.Prefix)
+	for _, k := range keys {
+		b, _ := archive.Get(context.Background(), k)
+		if bytes.Contains(b, []byte("3171")) {
+			t.Errorf("%s memuat NIK", k)
+		}
+	}
+	if strings.Contains(strings.Join(rows, ""), "3171") {
+		t.Errorf("karhutla_dq_results memuat NIK: %v", rows)
+	}
+
+	// Data berubah → snapshot lain → gate menolak sampai divalidasi ulang.
+	if _, err := g.rows("ops", "INSERT INTO warehouse.main.nasabah SELECT * FROM warehouse.main.nasabah LIMIT 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runReport(); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "data is at") {
+		t.Errorf("gate after data change: %v", err)
+	}
+	var published []string
+	for _, e := range g.audit.ofType(audit.DQPublished) {
+		published = append(published, e.Status)
+	}
+	if strings.Join(published, ",") != "FailedPrecondition,InvalidArgument,OK,OK" {
+		t.Errorf("dq_published audit %v", published)
 	}
 }

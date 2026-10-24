@@ -1,48 +1,48 @@
 # KarhutlaSQL
 
-Server SQL analitik ringan: **Apache Arrow Flight SQL** di atas **DuckDB**, ditulis dalam Go, satu binary statis. Dirancang untuk lingkungan on-prem/air-gapped dengan kebutuhan audit: SSO/OIDC, otorisasi per-catalog, session control, Prometheus metrics, audit log.
+A lightweight analytical SQL server: **Apache Arrow Flight SQL** on top of **DuckDB**, written in Go, shipped as a single static binary. Built for on-prem and air-gapped environments with audit requirements: SSO/OIDC, per-catalog authorization, session control, Prometheus metrics, and audit logs.
 
-> Status: pra-1.0, dalam pengembangan. Lihat [plan.md](plan.md) untuk fase yang sudah selesai.
+> Status: pre-1.0, under active development. See [plan.md](plan.md) for completed phases.
 >
-> 📖 Dokumentasi (English, dengan tutorial): https://sivi-shahab.github.io/KarhutlaSQL/ · 🗺️ [Diagram arsitektur interaktif](https://sivi-shahab.github.io/KarhutlaSQL/diagram/architecture.html)
+> 📖 Documentation & tutorials: https://sivi-shahab.github.io/KarhutlaSQL/ · 🗺️ [Interactive architecture diagram](https://sivi-shahab.github.io/KarhutlaSQL/diagram/architecture.html)
 
-## Fitur
+## Features
 
-| Area | Fitur |
+| Area | Features |
 |---|---|
-| Protokol | Arrow Flight SQL (JDBC, ADBC, Ibis, Superset, Grafana kompatibel) |
-| Engine | DuckDB (file / in-memory), init SQL untuk extension & ATTACH; DuckLake multi-writer (Postgres + MinIO) dengan instance per kelas beban |
-| Auth | Password → JWT, SSO/OIDC via JWKS, allowlist email/domain/group, TLS & mTLS |
-| Authz | Object privileges default-deny (catalog/schema/table/column), policy YAML, hot reload, four-eyes approval |
-| Governance | SQL rewriter: column masking berbasis tag klasifikasi, row-level security, profil `ai_sandbox` (SELECT-only + LIMIT) |
-| Kepatuhan | Access-history per kolom PII → Parquet WORM (retensi 10 th, DSAR export), residency guardrail, report run bertanda tangan untuk laporan OJK/SLIK (time travel snapshot DuckLake) |
-| Operasional | Session registry, kill session, resource group & statement queuing, rate limit, query timeout, admin via Flight DoAction |
-| Observabilitas | Prometheus `/metrics` + `karhutla_metrics()`, `karhutla_query_history()`, slow-query log, audit log JSON |
-| Agen AI | Server MCP (stdio + Streamable HTTP/OAuth) dengan profil `ai_sandbox` dipaksakan, verified queries + semantic model |
-| Operasi | Bulk ingest (`adbc_ingest`), backup bertingkat ke arsip WORM, schema migration berversi, kunci tanda tangan di Vault/HSM |
+| Protocol | Arrow Flight SQL (compatible with JDBC, ADBC, Ibis, Superset, Grafana) |
+| Engine | DuckDB (file / in-memory), init SQL for extensions & ATTACH; multi-writer DuckLake (Postgres + MinIO) with one instance per workload class |
+| Auth | Password → JWT, SSO/OIDC via JWKS, email/domain/group allow-list, TLS & mTLS |
+| Authz | Default-deny object privileges (catalog/schema/table/column), YAML policy, hot reload, four-eyes approval |
+| Governance | SQL rewriter: tag-based column masking, row-level security, `ai_sandbox` profile (SELECT-only + LIMIT) |
+| Compliance | Per-column PII access history → WORM Parquet (10-year retention, DSAR export), residency guardrail, signed report runs for regulatory reporting (OJK/SLIK) with DuckLake snapshot time travel |
+| Workload control | Session registry, kill session, resource groups & statement queuing, rate limits, query timeouts, admin via Flight DoAction |
+| Observability | Prometheus `/metrics` + `karhutla_metrics()`, `karhutla_query_history()`, slow-query log, JSON audit log |
+| AI agents | MCP server (stdio + Streamable HTTP/OAuth) with the `ai_sandbox` profile enforced, verified queries + semantic model |
+| Operations | Bulk ingest (`adbc_ingest`), tiered backups to the WORM archive, versioned schema migrations, signing keys in Vault/HSM |
 
-## Arsitektur
+## Architecture
 
 ```mermaid
 flowchart LR
-    clients["Klien BI & ADBC<br/>Superset · Grafana · JDBC/ADBC"]
-    agents["Agen AI<br/>Claude · Copilot via MCP"]
+    clients["BI & ADBC clients<br/>Superset · Grafana · JDBC/ADBC"]
+    agents["AI agents<br/>Claude · Copilot via MCP"]
     gx["Airflow + GX<br/>Great Expectations"]
-    idp["IdP OIDC<br/>Keycloak · go-oidc · JWT"]
-    obs["Observabilitas<br/>Prometheus · Grafana · OTel"]
+    idp["OIDC IdP<br/>Keycloak · go-oidc · JWT"]
+    obs["Observability<br/>Prometheus · Grafana · OTel"]
     vault["Vault Transit<br/>HashiCorp Vault · Ed25519"]
-    uc["Unity Catalog OSS<br/>katalog metadata (REST)"]
-    subgraph srv["Proses karhutlasql-server (per instance / kelas beban)"]
+    uc["Unity Catalog OSS<br/>metadata catalog (REST)"]
+    subgraph srv["karhutlasql-server process (per instance / workload class)"]
         grpc["Flight SQL server<br/>arrow-go Flight SQL · grpc-go"]
-        mcp["Server MCP<br/>MCP go-sdk · HTTP / stdio"]
+        mcp["MCP server<br/>MCP go-sdk · HTTP / stdio"]
         gov["Governance<br/>pg_query_go · policy YAML"]
-        exec["Eksekusi<br/>antrean · kuota · result cache"]
-        engine["Engine DuckDB<br/>DuckDB 1.5.6 · duckdb-go"]
-        ops["Report & operasi<br/>report · backup · DQ · UC sync"]
+        exec["Execution<br/>queues · quotas · result cache"]
+        engine["DuckDB engine<br/>DuckDB 1.5.6 · duckdb-go"]
+        ops["Reports & operations<br/>report · backup · DQ · UC sync"]
     end
-    duckfile[("File DuckDB<br/>warehouse.duckdb")]
+    duckfile[("DuckDB file<br/>warehouse.duckdb")]
     lake[("DuckLake<br/>Postgres + MinIO")]
-    archive[("Arsip WORM<br/>MinIO / S3 · Parquet")]
+    archive[("WORM archive<br/>MinIO / S3 · Parquet")]
 
     clients -- Flight SQL --> grpc
     agents -- MCP --> mcp
@@ -50,22 +50,22 @@ flowchart LR
     mcp -. gRPC in-process .-> grpc
     idp -. JWKS .-> grpc
     grpc -- statement --> gov
-    gov -- SQL ter-rewrite --> exec
-    exec -- eksekusi --> engine
-    engine -- baca / tulis --> duckfile
+    gov -- rewritten SQL --> exec
+    exec -- execute --> engine
+    engine -- read / write --> duckfile
     engine -- ATTACH --> lake
     exec -. metrics · trace .-> obs
     exec -. access history .-> archive
     gov -- report_run --> ops
     ops -- manifest --> archive
-    ops -. tanda tangan .-> vault
+    ops -. sign .-> vault
     ops -. sync metadata .-> uc
 ```
 
-**[▶ Buka diagram interaktif](https://sivi-shahab.github.io/KarhutlaSQL/diagram/architecture.html)**
-(klik komponen, badge **SRC** membuka kode sumbernya, telusuri jalur, ekspor PNG/SVG; daftar lengkap tool open source ada di kartu bawah diagram) — juga di halaman
-[Diagram arsitektur](https://sivi-shahab.github.io/KarhutlaSQL/architecture) situs
-dokumentasi. Sumber diagram: [`docs/public/diagram/architecture.json`](docs/public/diagram/architecture.json).
+**[▶ Open the interactive diagram](https://sivi-shahab.github.io/KarhutlaSQL/diagram/architecture.html)**
+(click a component for details, the **SRC** badge opens its source code, trace paths, export PNG/SVG; the full list of open-source tools is in the cards below the diagram) — also on the
+[Architecture diagram](https://sivi-shahab.github.io/KarhutlaSQL/architecture) page of the docs site.
+Diagram source: [`docs/public/diagram/architecture.json`](docs/public/diagram/architecture.json).
 
 ## Quick start
 
@@ -73,13 +73,13 @@ dokumentasi. Sumber diagram: [`docs/public/diagram/architecture.json`](docs/publ
 # build
 make build
 
-# jalankan dengan sample TPC-H + TLS self-signed
+# run with the TPC-H sample + self-signed TLS
 make testdata
 KARHUTLASQL_PASSWORD=secret ./bin/karhutlasql-server --username admin \
   --database-filename tests/data/tpch_sf0_01.duckdb \
   --tls-self-signed --print-queries
 
-# klien CLI
+# CLI client
 KARHUTLASQL_PASSWORD=secret ./bin/karhutlasql-client \
   --host localhost --port 31337 --username admin --tls --tls-skip-verify \
   --command "SELECT count(*) FROM lineitem"
@@ -98,11 +98,13 @@ conn = dbapi.connect(
 )
 ```
 
-JDBC (DBeaver, driver Arrow Flight SQL):
+JDBC (DBeaver, Arrow Flight SQL driver):
 
 ```
 jdbc:arrow-flight-sql://localhost:31337?useEncryption=true&user=admin&password=secret&disableCertificateVerification=true
 ```
+
+Step-by-step guides: [quick start](https://sivi-shahab.github.io/KarhutlaSQL/guide/quick-start) and [tutorials](https://sivi-shahab.github.io/KarhutlaSQL/tutorials/01-first-query).
 
 ## Docker
 
@@ -113,47 +115,48 @@ docker run --rm -p 31337:31337 -p 9090:9090 -e KARHUTLASQL_PASSWORD \
 ./bin/karhutlasql-client --host localhost --tls-skip-verify
 ```
 
-Default image: `--database-filename /data/warehouse.duckdb --username admin --tls-self-signed` (sertifikat di memori; produksi pakai `--tls-cert/--tls-key`). Image statis tidak bisa `LOAD` ekstensi DuckDB (ADR 19); untuk DuckLake pakai `make docker-lake` ([docs/ducklake.md](docs/ducklake.md)). Compose: `deploy/compose/compose.yaml`.
+Image defaults: `--database-filename /data/warehouse.duckdb --username admin --tls-self-signed` (in-memory certificate; use `--tls-cert/--tls-key` in production). The static image cannot `LOAD` DuckDB extensions (ADR 19); for DuckLake use `make docker-lake` ([docs/ducklake.md](docs/ducklake.md)). Compose: `deploy/compose/compose.yaml`.
 
-Kubernetes: lihat `deploy/helm/` dan [docs/deploy-k8s.md](docs/deploy-k8s.md).
+Kubernetes: see `deploy/helm/` and [docs/deploy-k8s.md](docs/deploy-k8s.md).
 
 ## Benchmark (TPC-H SF10)
 
-`tests/bench/tpch_bench.py`, 5 ronde bergantian, median per query; klien ADBC
-Python end-to-end vs DuckDB CLI 1.5.6 (`.mode trash`) pada file yang sama.
-Mesin dev: 16 vCPU, 15 GB RAM, WSL2 (CPU berbagi dengan host — angka absolut
-berfluktuasi antar sesi, rasio dalam satu sesi stabil).
+`tests/bench/tpch_bench.py`, 5 interleaved rounds, median per query; an
+end-to-end Python ADBC client vs the DuckDB 1.5.6 CLI (`.mode trash`) on the
+same file. Dev machine: 16 vCPU, 15 GB RAM, WSL2 (CPU shared with the host —
+absolute numbers vary between sessions, ratios within a session are stable).
 
-| | Total 22 query | Overhead vs CLI |
+| | Total, 22 queries | Overhead vs CLI |
 |---|---|---|
-| DuckDB CLI | 10,51 s | — |
-| karhutlasql-server (default: streaming, profiling mati) | 10,86 s | **+3,3%** |
-| karhutlasql-server `--streaming-buffer-size=0` (materialisasi) | 11,36 s | +8,1% |
-| `--query-profiling` (sesi terpisah) | — | +~13 poin persen |
+| DuckDB CLI | 10.51 s | — |
+| karhutlasql-server (default: streaming, profiling off) | 10.86 s | **+3.3%** |
+| karhutlasql-server `--streaming-buffer-size=0` (materialized) | 11.36 s | +8.1% |
+| `--query-profiling` (separate session) | — | +~13 percentage points |
 
-Hasil besar (7,6 juta baris `lineitem`): CLI 1,7 s. Server streaming: batch
-pertama 0,5–0,7 s, total 9,6–11 s; materialisasi: batch pertama 2,2–4,5 s,
-total 6,2–8,7 s dan memori hasil tidak terbatas. Ekspor raksasa ~25% lebih
-lama dengan streaming; buffer lebih besar (`--streaming-buffer-size`)
-mendekatkan ke materialisasi. Batch Arrow ke klien: 64k baris. Detail: ADR
-33–34.
+Large result (7.6 million `lineitem` rows): CLI 1.7 s. Server with streaming:
+first batch 0.5–0.7 s, total 9.6–11 s; materialized: first batch 2.2–4.5 s,
+total 6.2–8.7 s, with unbounded result memory. Huge exports take ~25% longer
+with streaming; a larger buffer (`--streaming-buffer-size`) moves it closer to
+materialized. Arrow batches to the client: 64k rows. Details: ADR 33–34.
 
-## Dokumentasi
+## Documentation
 
-- [docs/install.md](docs/install.md) · [docs/config.md](docs/config.md) · [docs/auth.md](docs/auth.md) · [docs/policy.md](docs/policy.md) · [docs/monitoring.md](docs/monitoring.md) · [docs/client.md](docs/client.md)
-- Desain: [spec.md](spec.md) · [arsitektur.md](arsitektur.md) · [plan.md](plan.md) · [ADR](arsitektur.md) (§10)
-- Riset fitur & kepatuhan: [docs/research/fitur-lanjutan.md](docs/research/fitur-lanjutan.md)
+- Docs site: https://sivi-shahab.github.io/KarhutlaSQL/ — why KarhutlaSQL, quick start, concepts, 10 tutorials, reference
+- Source pages: [docs/install.md](docs/install.md) · [docs/config.md](docs/config.md) · [docs/auth.md](docs/auth.md) · [docs/policy.md](docs/policy.md) · [docs/monitoring.md](docs/monitoring.md) · [docs/client.md](docs/client.md)
+- Design (in Indonesian): [spec.md](spec.md) · [arsitektur.md](arsitektur.md) · [plan.md](plan.md) · [ADRs](arsitektur.md) (§10)
+- Research on features & compliance: [docs/research/fitur-lanjutan.md](docs/research/fitur-lanjutan.md)
 
-## Pengembangan
+## Development
 
 ```bash
-make lint test             # unit
-make test-integration      # butuh docker + python venv
+make lint test             # unit tests
+make test-integration      # needs docker + a python venv
 make run-dev
+make docs                  # docs site (VitePress, needs Node 22) → docs/.vitepress/dist
 ```
 
-Lihat [CONTRIBUTING.md](CONTRIBUTING.md). Laporan keamanan: [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
 
-## Lisensi
+## License
 
-Apache License 2.0 — lihat [LICENSE](LICENSE) dan [NOTICE](NOTICE). Dependency pihak ketiga: [THIRD_PARTY.md](THIRD_PARTY.md).
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Third-party dependencies: [THIRD_PARTY.md](THIRD_PARTY.md).

@@ -228,7 +228,8 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		AllowedDirectories: allowed, Secrets: secrets, StreamingBufferSize: streamingBuffer(cfg.StreamingBufferSize),
 		Setup: func(ctx context.Context, conn *sql.Conn) error {
 			return sqlext.Register(ctx, conn, sqlext.Deps{Quota: quotas, Verified: vset, Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, AccessLog: access, MaskKey: maskKey, DQ: dqStore,
-				RunReport: func(ctx context.Context, name, asOf string) ([]any, error) { return srv.ReportRow(ctx, name, asOf) }})
+				RunReport:    func(ctx context.Context, name, asOf string) ([]any, error) { return srv.ReportRow(ctx, name, asOf) },
+				ClassifyScan: func(ctx context.Context) ([][]any, error) { return srv.ClassifyScan(ctx) }})
 		}})
 	if err != nil {
 		return err

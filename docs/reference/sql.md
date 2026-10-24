@@ -32,9 +32,11 @@ inspect and kill sessions on a busy server.
 | `karhutla_report_run(name)` | Runs a report from `reports.yaml`: `report_id, name, snapshot_id, rows, location, result_sha256, manifest_sha256` | roles listed on the report |
 | `karhutla_report_run_at(name, as_of)` | Same, on a past DuckLake snapshot; `as_of` is a version number or an RFC 3339 time | roles listed on the report |
 | `karhutla_dq_results()` | Great Expectations validation summaries: `table_name, suite, run_id, validation_id, snapshot_id, success, evaluated, failed_critical, failed_warning, validated_at, run_by, results` | all authenticated users (no row values) |
+| `karhutla_classify_scan()` | Suggested PII tags for untagged columns: `table_name, column_name, data_type, suggested_tag, match_ratio, sampled, reason, current_tag` — no values | admin |
 
 Access history needs an archive (`--archive-s3-*` or `--archive-dir`).
-See [Monitoring](/monitoring), [Reports](/reports), [Data quality](/data-quality).
+See [Monitoring](/monitoring), [Reports](/reports), [Data quality](/data-quality),
+[auto-classification](/policy#auto-classification-finding-untagged-pii).
 
 ### AI & semantic layer
 

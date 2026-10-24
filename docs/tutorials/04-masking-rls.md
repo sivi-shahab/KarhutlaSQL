@@ -212,6 +212,21 @@ different admins approve the same content hash:
 The approved content is stored in `--state-dir`, and every step is recorded
 in the audit log as `policy_change`. See [Policy & governance](/policy#four-eyes-g-11).
 
+## Tip — find PII you forgot to tag
+
+Masking only protects tagged columns. As admin, ask the server which columns
+look like PII but have no tag yet:
+
+```sql
+SELECT table_name, column_name, suggested_tag, reason
+FROM karhutla_classify_scan() WHERE current_tag IS NULL;
+```
+
+It samples each table and matches NIK, NPWP, phone, e-mail, card, and
+account-number patterns plus column names — returning suggestions only, never
+values. Review them and add the ones you agree with to `classification.yaml`.
+Details: [auto-classification](/policy#auto-classification-finding-untagged-pii).
+
 ## What just happened
 
 1. After parsing, the server checked privileges for every table the

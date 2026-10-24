@@ -38,6 +38,8 @@ const (
 	// Backup & migration (Fase 8d).
 	SchemaMigration = "schema_migration"
 	Backup          = "backup"
+	// Usulan klasifikasi PII (backlog auto-classification).
+	ClassificationScan = "classification_scan"
 )
 
 // Event satu baris audit (JSON). Field kosong dihilangkan.

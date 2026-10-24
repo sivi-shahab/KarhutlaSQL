@@ -129,7 +129,8 @@ func start(t testing.TB, o envOpts) *testEnv {
 	if eng == nil {
 		d, err := duckdb.Open(ctx, duckdb.Config{InitSQL: o.initSQL, AllowedDirectories: o.allowedDirs, StreamingBufferSize: "4MB", Setup: func(ctx context.Context, conn *sql.Conn) error {
 			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, History: history, AccessLog: o.accessLog, MaskKey: o.maskKey, DQ: o.dq, Quota: quotas, Verified: o.verified,
-				RunReport: func(ctx context.Context, name, asOf string) ([]any, error) { return srv.ReportRow(ctx, name, asOf) }})
+				RunReport:    func(ctx context.Context, name, asOf string) ([]any, error) { return srv.ReportRow(ctx, name, asOf) },
+				ClassifyScan: func(ctx context.Context) ([][]any, error) { return srv.ClassifyScan(ctx) }})
 		}})
 		if err != nil {
 			t.Fatal(err)

@@ -57,6 +57,9 @@ type Deps struct {
 	Quota *quota.Tracker
 	// Verified verified queries & semantic model (Fase 8c); nil = kosong.
 	Verified *verified.Set
+	// ClassifyScan usulan tag PII per kolom (admin), baris classifyCols;
+	// nil = fungsi menolak.
+	ClassifyScan func(ctx context.Context) ([][]any, error)
 	// MaskKey kunci HMAC-SHA256 untuk mask hash_hmac (G-03); kosong = fungsi
 	// mask menolak semua pemanggilan.
 	MaskKey []byte
@@ -82,6 +85,7 @@ func Register(_ context.Context, conn *sql.Conn, d Deps) error {
 		"karhutla_chargeback":       table(chargebackCols, nil, nil, d.chargeback),
 		"karhutla_verified_queries": table(verifiedCols, nil, nil, d.verifiedQueries),
 		"karhutla_semantic_model":   table([]col{{"semantic_model", duckdb.TYPE_VARCHAR}}, nil, nil, d.semanticModel),
+		"karhutla_classify_scan":    table(classifyCols, nil, nil, d.classifyScan),
 		// Nama terpisah: duckdb-go gagal bila named argument tidak diberikan dan
 		// DuckDB mengabaikan registrasi overload kedua.
 		"karhutla_report_run":           table(reportCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, nil, d.report),
@@ -161,6 +165,10 @@ var (
 		{"evaluated", duckdb.TYPE_BIGINT}, {"failed_critical", duckdb.TYPE_BIGINT}, {"failed_warning", duckdb.TYPE_BIGINT},
 		{"validated_at", duckdb.TYPE_TIMESTAMP_TZ}, {"run_by", duckdb.TYPE_VARCHAR}, {"results", duckdb.TYPE_VARCHAR},
 	}
+	// classifyCols kolom karhutla_classify_scan().
+	classifyCols = []col{{"table_name", duckdb.TYPE_VARCHAR}, {"column_name", duckdb.TYPE_VARCHAR}, {"data_type", duckdb.TYPE_VARCHAR},
+		{"suggested_tag", duckdb.TYPE_VARCHAR}, {"match_ratio", duckdb.TYPE_DOUBLE}, {"sampled", duckdb.TYPE_BIGINT},
+		{"reason", duckdb.TYPE_VARCHAR}, {"current_tag", duckdb.TYPE_VARCHAR}}
 	killCols = []col{{"session_id", duckdb.TYPE_VARCHAR}, {"killed", duckdb.TYPE_BOOLEAN}}
 	// verifiedCols karhutla_verified_queries() (Fase 8c).
 	verifiedCols = []col{{"name", duckdb.TYPE_VARCHAR}, {"question", duckdb.TYPE_VARCHAR}, {"sql", duckdb.TYPE_VARCHAR},
@@ -381,6 +389,17 @@ func (d Deps) report(ctx context.Context, args []any, _ map[string]any) ([][]any
 		return nil, fmt.Errorf("karhutla_report_run: %w", err)
 	}
 	return [][]any{row}, nil
+}
+
+// classifyScan: karhutla_classify_scan() — admin ditegakkan ClassifyScan.
+func (d Deps) classifyScan(ctx context.Context, _ []any, _ map[string]any) ([][]any, error) {
+	if _, err := identity(ctx); err != nil {
+		return nil, err
+	}
+	if d.ClassifyScan == nil {
+		return nil, errors.New("karhutla_classify_scan: not configured")
+	}
+	return d.ClassifyScan(ctx)
 }
 
 func (d Deps) kill(ctx context.Context, args []any, _ map[string]any) ([][]any, error) {

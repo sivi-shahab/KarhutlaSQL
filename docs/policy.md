@@ -105,6 +105,59 @@ replaced by a protected subquery, then the DuckDB plan is verified. Consequences
 - Top-level `PIVOT` and syntax DuckDB cannot serialize are rejected with the
   message "cannot be rewritten for data governance".
 
+### Auto-classification: finding untagged PII
+
+Masking only protects columns that are tagged. To find PII columns nobody
+has tagged yet, an admin runs:
+
+```sql
+SELECT table_name, column_name, suggested_tag, match_ratio, reason, current_tag
+FROM karhutla_classify_scan()
+WHERE current_tag IS NULL            -- only columns that are not protected yet
+ORDER BY table_name, column_name;
+```
+
+```
+ table_name          | column_name | suggested_tag | match_ratio | reason       | current_tag
+---------------------+-------------+---------------+-------------+--------------+-------------
+ demo.main.nasabah   | email       | pii.email     | 1           | pattern+name | NULL
+ demo.main.nasabah   | nama        | pii.name      | 0           | name         | NULL
+ demo.main.nasabah   | telepon     | pii.phone     | 1           | pattern+name | NULL
+ demo.main.transaksi | id_nasabah  | pii.nik       | 1           | pattern      | NULL
+ demo.main.transaksi | kartu       | pii.card      | 1           | pattern+name | NULL
+```
+
+The scan samples up to 1,000 rows per base table (all attached catalogs) and
+checks text, `BIGINT`/`HUGEINT`, and `DECIMAL` columns against these rules:
+
+| Tag | Pattern | Column-name hints |
+|---|---|---|
+| `pii.nik` | 16 digits with a valid birth date (day +40 for women, month 01–12) | `nik`, `ktp`, `national_id` |
+| `pii.npwp` | `99.999.999.9-999.999` or 15 digits | `npwp`, `tax_id` |
+| `pii.card` | 13–19 digits passing the Luhn check | `card`, `kartu`, `pan` |
+| `pii.phone` | Indonesian mobile: `08…`, `62 8…`, `+62 8…` (spaces/dashes allowed) | `phone`, `telepon`, `telp`, `hp`, `msisdn`, `mobile` |
+| `pii.email` | e-mail address | `email`, `e_mail`, `surel` |
+| `pii.account` | 10–16 digits — **only** when the column name also matches | `rekening`, `norek`, `account`, `acct` |
+| `pii.name` | column name only | `nama`, `name` |
+
+A pattern counts when at least 80% of the sampled non-null values match.
+`reason` is `pattern`, `name`, or `pattern+name` (strongest). A column name
+alone never yields a pattern-based tag, so a `nik` column holding internal
+codes is not flagged as a NIK.
+
+- **Suggestions, not decisions.** Nothing is tagged automatically. A data
+  steward reviews the list, adds lines to `classification.yaml`
+  (`demo.main.transaksi.id_nasabah: pii.nik`), and the change goes through
+  Git review and [four-eyes](#four-eyes-g-11) approval like any other.
+  Rename the suggested tags if your classification uses different names.
+- **No values leave the scan.** Results contain only names, ratios, and
+  counts; the scan is recorded in the audit log as `classification_scan`
+  (tables scanned, tables skipped, suggestions).
+- **Admin only**, and it reads raw data internally. Tables that cannot be
+  read (for example an unreachable attached catalog) are skipped.
+- **Cost:** reservoir sampling reads each table fully once; run it off-peak
+  on large warehouses.
+
 ## Resource groups & queuing (G-08)
 
 Every statement (except admin control queries: only `karhutla_*` functions

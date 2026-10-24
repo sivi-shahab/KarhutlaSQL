@@ -1,0 +1,22 @@
+/* Aksen oranye (karhutla = kebakaran hutan & lahan). */
+:root {
+  --vp-c-brand-1: #d9480f;
+  --vp-c-brand-2: #e8590c;
+  --vp-c-brand-3: #f76707;
+  --vp-c-brand-soft: rgba(247, 103, 7, 0.14);
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #f76707 20%, #c92a2a);
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, #ffa94d 50%, #ff6b6b 50%);
+  --vp-home-hero-image-filter: blur(56px);
+}
+.dark {
+  --vp-c-brand-1: #ff922b;
+  --vp-c-brand-2: #fd7e14;
+  --vp-c-brand-3: #f76707;
+}
+.diagram-frame {
+  width: 100%;
+  height: 1100px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+}

@@ -2,8 +2,8 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "KarhutlaSQL — Arsitektur Server Flight SQL",
-    "output": "docs/diagram/arsitektur.html",
+    "title": "KarhutlaSQL — Flight SQL Server Architecture",
+    "output": "docs/public/diagram/architecture.html",
     "quality_profile": "showcase",
     "repository": {
       "url": "https://github.com/sivi-shahab/KarhutlaSQL.git",
@@ -16,7 +16,7 @@
     {
       "id": "clients",
       "type": "external",
-      "label": "Klien BI & ADBC",
+      "label": "BI & ADBC clients",
       "sublabel": "Superset · Grafana · JDBC/ADBC",
       "pos": [
         40,
@@ -29,7 +29,7 @@
       "sources": [
         {
           "path": "pkg/client/client.go",
-          "label": "klien Go (pkg/client)"
+          "label": "Go client (pkg/client)"
         },
         {
           "path": "cmd/karhutlasql-client/main.go",
@@ -40,7 +40,7 @@
     {
       "id": "agents",
       "type": "external",
-      "label": "Agen AI",
+      "label": "AI agents",
       "sublabel": "Claude · Copilot via MCP",
       "pos": [
         40,
@@ -67,15 +67,15 @@
       "sources": [
         {
           "path": "internal/auth/oidc/oidc.go",
-          "label": "verifikasi OIDC/JWKS"
+          "label": "OIDC/JWKS verification"
         },
         {
           "path": "internal/auth/local/local.go",
-          "label": "login lokal (golang-jwt)"
+          "label": "local login (golang-jwt)"
         },
         {
           "path": "deploy/keycloak-dev/realm-karhutlasql.json",
-          "label": "realm Keycloak dev"
+          "label": "Keycloak dev realm"
         }
       ]
     },
@@ -96,22 +96,22 @@
       "sources": [
         {
           "path": "internal/flightsql/server.go",
-          "label": "server Flight SQL"
+          "label": "Flight SQL server"
         },
         {
           "path": "internal/interceptor/auth.go",
-          "label": "interceptor auth"
+          "label": "auth interceptor"
         },
         {
           "path": "internal/session/session.go",
-          "label": "registry sesi"
+          "label": "session registry"
         }
       ]
     },
     {
       "id": "mcp",
       "type": "backend",
-      "label": "Server MCP",
+      "label": "MCP server",
       "sublabel": "MCP go-sdk · HTTP / stdio",
       "pos": [
         300,
@@ -125,7 +125,7 @@
       "sources": [
         {
           "path": "internal/mcp/mcp.go",
-          "label": "tools MCP"
+          "label": "MCP tools"
         },
         {
           "path": "internal/mcp/http.go",
@@ -154,19 +154,19 @@
         },
         {
           "path": "internal/sqlrewrite/substitute.go",
-          "label": "rewrite masking/RLS"
+          "label": "masking/RLS rewrite"
         },
         {
           "path": "internal/sqlrewrite/targets.go",
-          "label": "target tulis (pg_query)"
+          "label": "write targets (pg_query)"
         }
       ]
     },
     {
       "id": "exec",
       "type": "backend",
-      "label": "Eksekusi",
-      "sublabel": "antrean · kuota · result cache",
+      "label": "Execution",
+      "sublabel": "queues · quotas · result cache",
       "pos": [
         860,
         260
@@ -178,11 +178,11 @@
       "sources": [
         {
           "path": "internal/scheduler/scheduler.go",
-          "label": "antrean resource group"
+          "label": "resource group queues"
         },
         {
           "path": "internal/quota/quota.go",
-          "label": "kuota tim"
+          "label": "team quotas"
         },
         {
           "path": "internal/cache/cache.go",
@@ -193,7 +193,7 @@
     {
       "id": "engine",
       "type": "backend",
-      "label": "Engine DuckDB",
+      "label": "DuckDB engine",
       "sublabel": "DuckDB 1.5.6 · duckdb-go",
       "pos": [
         1140,
@@ -206,7 +206,7 @@
       "sources": [
         {
           "path": "internal/engine/duckdb/duckdb.go",
-          "label": "engine DuckDB"
+          "label": "DuckDB engine"
         },
         {
           "path": "internal/engine/duckdb/stream.go",
@@ -214,14 +214,14 @@
         },
         {
           "path": "internal/engine/duckdb/analyze.go",
-          "label": "guardrail plan"
+          "label": "plan guardrails"
         }
       ]
     },
     {
       "id": "duckfile",
       "type": "database",
-      "label": "File DuckDB",
+      "label": "DuckDB file",
       "sublabel": "warehouse.duckdb",
       "pos": [
         1140,
@@ -259,18 +259,18 @@
         },
         {
           "path": "deploy/Dockerfile",
-          "label": "image varian lake"
+          "label": "lake image variant"
         },
         {
           "path": "docs/ducklake.md",
-          "label": "topologi multi-writer"
+          "label": "multi-writer topology"
         }
       ]
     },
     {
       "id": "obs",
       "type": "cloud",
-      "label": "Observabilitas",
+      "label": "Observability",
       "sublabel": "Prometheus · Grafana · OTel",
       "pos": [
         860,
@@ -283,7 +283,7 @@
       "sources": [
         {
           "path": "internal/metrics/metrics.go",
-          "label": "metrics Prometheus"
+          "label": "Prometheus metrics"
         },
         {
           "path": "deploy/observability/compose.yaml",
@@ -294,7 +294,7 @@
     {
       "id": "ops",
       "type": "backend",
-      "label": "Report & operasi",
+      "label": "Reports & operations",
       "sublabel": "report · backup · DQ · UC sync",
       "pos": [
         580,
@@ -311,7 +311,7 @@
         },
         {
           "path": "internal/backup/backup.go",
-          "label": "backup bertingkat"
+          "label": "tiered backups"
         },
         {
           "path": "internal/migrate/migrate.go",
@@ -322,7 +322,7 @@
     {
       "id": "archive",
       "type": "database",
-      "label": "Arsip WORM",
+      "label": "WORM archive",
       "sublabel": "MinIO / S3 · Parquet WORM",
       "pos": [
         860,
@@ -343,7 +343,7 @@
         },
         {
           "path": "internal/session/revsync.go",
-          "label": "sinkron revocation"
+          "label": "revocation sync"
         }
       ]
     },
@@ -363,7 +363,7 @@
       "sources": [
         {
           "path": "internal/report/vault.go",
-          "label": "signer Vault Transit"
+          "label": "Vault Transit signer"
         }
       ]
     },
@@ -383,11 +383,11 @@
       "sources": [
         {
           "path": "deploy/dq-example/dag_karhutla_dq.py",
-          "label": "DAG Airflow"
+          "label": "Airflow DAG"
         },
         {
           "path": "deploy/dq-example/gx_checkpoint.py",
-          "label": "runner GX"
+          "label": "GX runner"
         },
         {
           "path": "internal/flightsql/dq.go",
@@ -411,7 +411,7 @@
       "sources": [
         {
           "path": "internal/catalogsync/catalogsync.go",
-          "label": "sinkron metadata"
+          "label": "metadata sync"
         }
       ]
     }
@@ -419,7 +419,7 @@
   "boundaries": [
     {
       "kind": "region",
-      "label": "Proses karhutlasql-server (per instance / kelas beban)",
+      "label": "karhutlasql-server process (per instance / workload class)",
       "wraps": [
         "grpc",
         "mcp",
@@ -469,21 +469,21 @@
       "id": "gov-exec",
       "from": "gov",
       "to": "exec",
-      "label": "SQL ter-rewrite",
+      "label": "rewritten SQL",
       "variant": "emphasis"
     },
     {
       "id": "exec-engine",
       "from": "exec",
       "to": "engine",
-      "label": "eksekusi",
+      "label": "execute",
       "variant": "emphasis"
     },
     {
       "id": "engine-file",
       "from": "engine",
       "to": "duckfile",
-      "label": "baca / tulis"
+      "label": "read / write"
     },
     {
       "id": "engine-lake",
@@ -521,7 +521,7 @@
       "id": "ops-vault",
       "from": "ops",
       "to": "vault",
-      "label": "tanda tangan",
+      "label": "sign",
       "variant": "security"
     },
     {
@@ -541,39 +541,39 @@
   "cards": [
     {
       "dot": "rose",
-      "title": "Governance di server",
+      "title": "Governance in the server",
       "items": [
-        "Izin per tabel default-deny (policy YAML)",
-        "Masking kolom bertag & RLS via rewrite AST",
-        "Kanal MCP selalu dibatasi profil ai_sandbox"
+        "Default-deny per-table privileges (policy YAML)",
+        "Tag-based column masking & RLS via AST rewrite",
+        "MCP channel always capped by the ai_sandbox profile"
       ]
     },
     {
       "dot": "emerald",
-      "title": "Eksekusi",
+      "title": "Execution",
       "items": [
-        "Hasil di-stream per chunk Arrow (64 MB buffer)",
-        "Result cache per identitas, invalidasi snapshot",
-        "Kuota per tim + chargeback"
+        "Results streamed as Arrow chunks (64 MB buffer)",
+        "Per-identity result cache, snapshot invalidation",
+        "Per-team quotas + chargeback"
       ]
     },
     {
       "dot": "amber",
-      "title": "Kepatuhan",
+      "title": "Compliance",
       "items": [
-        "Access history per kolom PII (Parquet WORM)",
-        "Report run bertanda tangan + time travel DuckLake",
-        "Kill session disebarkan ke semua instance via arsip"
+        "Per-column PII access history (WORM Parquet)",
+        "Signed report runs + DuckLake time travel",
+        "Session kills propagated to every instance via the archive"
       ]
     },
     {
       "dot": "cyan",
-      "title": "Stack runtime (Go, open source)",
+      "title": "Runtime stack (Go, open source)",
       "items": [
         "Apache Arrow arrow-go v18 — Arrow, Flight SQL, Parquet",
-        "DuckDB 1.5.6 via duckdb-go (CGO, statis)",
+        "DuckDB 1.5.6 via duckdb-go (CGO, static)",
         "grpc-go + protobuf · otelgrpc",
-        "pg_query_go (parser PostgreSQL) untuk authz & rewrite",
+        "pg_query_go (PostgreSQL parser) for authz & rewrite",
         "go-oidc · golang-jwt · x/oauth2 · bcrypt",
         "Prometheus client_golang · OpenTelemetry SDK",
         "minio-go · MCP go-sdk · cobra · viper · yaml.v3"
@@ -581,14 +581,14 @@
     },
     {
       "dot": "violet",
-      "title": "Infrastruktur & integrasi",
+      "title": "Infrastructure & integrations",
       "items": [
-        "Keycloak (IdP OIDC) · HashiCorp Vault Transit",
-        "PostgreSQL 17 + MinIO untuk DuckLake",
-        "Ekstensi DuckDB: ducklake · postgres_scanner · httpfs",
-        "Prometheus + Grafana · kolektor OTLP",
+        "Keycloak (OIDC IdP) · HashiCorp Vault Transit",
+        "PostgreSQL 17 + MinIO for DuckLake",
+        "DuckDB extensions: ducklake · postgres_scanner · httpfs",
+        "Prometheus + Grafana · OTLP collector",
         "Apache Airflow + Great Expectations 1.x",
-        "Unity Catalog OSS (katalog metadata)"
+        "Unity Catalog OSS (metadata catalog)"
       ]
     },
     {
@@ -599,7 +599,7 @@
         "goreleaser · golangci-lint · govulncheck · syft (SBOM)",
         "pytest · adbc-driver-flightsql · pyarrow",
         "Arrow Flight SQL JDBC driver (smoke test)",
-        "MkDocs + GitHub Pages · Archify (diagram)"
+        "VitePress + GitHub Pages · Archify (diagram)"
       ]
     }
   ]

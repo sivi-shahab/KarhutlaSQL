@@ -10,5 +10,7 @@ tests/data/*.duckdb
 __pycache__/
 .pytest_cache/
 .dev/
-site/
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
 .archify/

@@ -1,10 +1,10 @@
-# Autentikasi
+# Authentication
 
-## Password lokal
+## Local password
 
-`--username` + password dari env `--password-env` (default
-`KARHUTLASQL_PASSWORD`, plaintext atau hash bcrypt). Handshake Flight Basic →
-token JWT server (HS256 `KARHUTLASQL_JWT_SECRET` atau RS256
+`--username` + password from the env var named by `--password-env` (default
+`KARHUTLASQL_PASSWORD`, plaintext or bcrypt hash). Flight Basic handshake →
+server JWT token (HS256 `KARHUTLASQL_JWT_SECRET` or RS256
 `--jwt-private-key-file`, TTL `--jwt-ttl` ≤ 24h).
 
 ## OIDC (Keycloak / Entra / Okta)
@@ -14,24 +14,24 @@ karhutlasql-server --oidc-issuer https://sso.corp/realms/data \
   --oidc-audience karhutlasql --policy-file policy.yaml ...
 ```
 
-- Klien mengirim access token IdP sebagai `authorization: Bearer <jwt>`; server
-  memilih verifier dari claim `iss` (token lokal vs OIDC) dan memverifikasi
-  signature (JWKS), `iss`, `aud` (harus memuat `--oidc-audience`), `exp`
-  (toleransi 60s).
-- Claim: user = `--oidc-username-claim` (default `preferred_username`, fallback
-  `sub`), grup = `--oidc-groups-claim` (default `groups`), email hanya bila
+- The client sends the IdP access token as `authorization: Bearer <jwt>`; the
+  server picks the verifier from the `iss` claim (local token vs OIDC) and
+  verifies the signature (JWKS), `iss`, `aud` (must contain `--oidc-audience`),
+  and `exp` (60s leeway).
+- Claims: user = `--oidc-username-claim` (default `preferred_username`, fallback
+  `sub`), groups = `--oidc-groups-claim` (default `groups`), email only when
   `email_verified=true`.
-- Identitas di luar allowlist policy → `PERMISSION_DENIED`.
-- Sesi OIDC = claim `sid`; kill session menolak token baru hasil refresh selama
-  minimal 24 jam.
-- `--oidc-issuer` wajib disertai `--policy-file`.
+- Identities outside the policy allowlist → `PERMISSION_DENIED`.
+- OIDC session = the `sid` claim; kill session rejects new tokens obtained by
+  refresh for at least 24 hours.
+- `--oidc-issuer` requires `--policy-file`.
 
-Keycloak: client publik dengan *audience mapper* (`karhutlasql`) dan *group
-membership mapper* (`groups`, tanpa full path); untuk CLI aktifkan *OAuth 2.0
-Device Authorization Grant* dan redirect `http://127.0.0.1/*` (PKCE S256).
-Contoh siap pakai: `deploy/keycloak-dev/` (realm, policy, compose).
+Keycloak: a public client with an *audience mapper* (`karhutlasql`) and a
+*group membership mapper* (`groups`, without full path); for the CLI enable
+*OAuth 2.0 Device Authorization Grant* and the redirect `http://127.0.0.1/*`
+(PKCE S256). Ready-to-use example: `deploy/keycloak-dev/` (realm, policy, compose).
 
-Klien:
+Clients:
 
 ```python
 from adbc_driver_flightsql import dbapi
@@ -43,4 +43,4 @@ conn = dbapi.connect("grpc+tls://host:31337",
 jdbc:arrow-flight-sql://host:31337?useEncryption=true&token=<access_token>
 ```
 
-CLI: `docs/client.md` (`--oidc-login`).
+CLI: [client](client.md#sso) (`--oidc-login`).

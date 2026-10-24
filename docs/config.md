@@ -1,88 +1,88 @@
-# Referensi konfigurasi
+# Configuration reference
 
-<!-- Dibangkitkan dari internal/config (TestConfigReference -update); jangan disunting manual. -->
+<!-- Generated from internal/config (TestConfigReference -update); do not edit by hand. -->
 
-Setiap flag bisa diberikan sebagai flag, env var, atau kunci di file YAML
-(`--config`); prioritas **flag > env > file**. Nilai rahasia tidak pernah
-lewat flag: flag `*-env` berisi *nama* env var yang memuat rahasianya,
-flag `*-file` menunjuk file (kunci privat wajib 0600).
+Every setting can be given as a flag, an env var, or a key in the YAML file
+(`--config`); precedence is **flag > env > file**. Secret values never
+travel as flags: `*-env` flags hold the *name* of the env var that contains
+the secret, `*-file` flags point to a file (private keys must be 0600).
 
-| Flag | Env | Default | Keterangan |
+| Flag | Env | Default | Description |
 |---|---|---|---|
-| `--access-log-flush-interval` | `KARHUTLASQL_ACCESS_LOG_FLUSH_INTERVAL` | `30s` | interval flush access-history ke arsip |
-| `--allowed-directories` | `KARHUTLASQL_ALLOWED_DIRECTORIES` | — | path/prefix URL yang boleh diakses DuckDB (COPY/read_*/ATTACH), mis. /data/export/,s3://lake/; selain itu ditolak |
-| `--archive-dir` | `KARHUTLASQL_ARCHIVE_DIR` | — | arsip access-history & report di direktori lokal (dev; bukan WORM) |
-| `--archive-retention` | `KARHUTLASQL_ARCHIVE_RETENTION` | `87600h0m0s` | retensi object-lock COMPLIANCE objek arsip (default 10 tahun) |
-| `--archive-s3-access-key-env` | `KARHUTLASQL_ARCHIVE_S3_ACCESS_KEY_ENV` | `KARHUTLASQL_ARCHIVE_ACCESS_KEY` | nama env var access key S3 arsip |
-| `--archive-s3-bucket` | `KARHUTLASQL_ARCHIVE_S3_BUCKET` | — | bucket arsip (object-lock aktif) |
-| `--archive-s3-endpoint` | `KARHUTLASQL_ARCHIVE_S3_ENDPOINT` | — | endpoint S3/MinIO arsip (host:port); bucket wajib object-lock |
-| `--archive-s3-insecure` | `KARHUTLASQL_ARCHIVE_S3_INSECURE` | `false` | S3 arsip lewat http (dev) |
-| `--archive-s3-region` | `KARHUTLASQL_ARCHIVE_S3_REGION` | `us-east-1` | region bucket arsip |
-| `--archive-s3-secret-key-env` | `KARHUTLASQL_ARCHIVE_S3_SECRET_KEY_ENV` | `KARHUTLASQL_ARCHIVE_SECRET_KEY` | nama env var secret key S3 arsip |
-| `--audit-log-dir` | `KARHUTLASQL_AUDIT_LOG_DIR` | — | direktori audit log harian (0600); kosong = stdout |
-| `--audit-log-sql` | `KARHUTLASQL_AUDIT_LOG_SQL` | `false` | sertakan teks SQL di audit (default hanya SHA-256; hati-hati PII) |
-| `--backup-interval` | `KARHUTLASQL_BACKUP_INTERVAL` | `0s` | interval backup terjadwal ke arsip (EXPORT DATABASE catalog DuckDB + snapshot DuckLake); 0 = hanya DoAction backup |
-| `--backup-retention-daily` | `KARHUTLASQL_BACKUP_RETENTION_DAILY` | `168h0m0s` | retensi object-lock backup harian |
-| `--backup-retention-monthly` | `KARHUTLASQL_BACKUP_RETENTION_MONTHLY` | `9600h0m0s` | retensi object-lock backup bulanan (tanggal 1 UTC) |
-| `--backup-retention-weekly` | `KARHUTLASQL_BACKUP_RETENTION_WEEKLY` | `840h0m0s` | retensi object-lock backup mingguan (Minggu UTC) |
-| `--backup-staging-dir` | `KARHUTLASQL_BACKUP_STAGING_DIR` | — | direktori lokal sementara untuk EXPORT (otomatis masuk allowed-directories); default <state-dir>/backup-staging |
-| `--classification-file` | `KARHUTLASQL_CLASSIFICATION_FILE` | — | classification YAML (tag kolom + mask, G-03); kosong = tanpa mask. Reload: SIGHUP |
-| `--config` | `KARHUTLASQL_CONFIG` | — | file konfigurasi YAML (prioritas: flag > env > file) |
-| `--database-filename` | `KARHUTLASQL_DATABASE_FILENAME` | — | file .duckdb; kosong = in-memory |
-| `--dq-max-age` | `KARHUTLASQL_DQ_MAX_AGE` | `26h0m0s` | DQ gate report: validasi GX tiap tabel sumber harus lebih muda dari ini; 0 = gate mati |
-| `--duckdb-secrets-file` | `KARHUTLASQL_DUCKDB_SECRETS_FILE` | — | YAML TEMPORARY SECRET DuckDB yang diinjeksi server (nilai rahasia dari env; scope wajib di allowed-directories) |
-| `--four-eyes` | `KARHUTLASQL_FOUR_EYES` | `true` | perubahan policy/classification aktif setelah 2 persetujuan admin berbeda (G-11) |
-| `--health-check-query` | `KARHUTLASQL_HEALTH_CHECK_QUERY` | `SELECT 1` | query untuk gRPC health dan /healthz |
-| `--host` | `KARHUTLASQL_HOST` | `0.0.0.0` | alamat listen |
-| `--init-sql-file` | `KARHUTLASQL_INIT_SQL_FILE` | — | file SQL yang dieksekusi saat start (INSTALL/LOAD/ATTACH) |
-| `--jwt-private-key-file` | `KARHUTLASQL_JWT_PRIVATE_KEY_FILE` | — | kunci RSA PEM (0600) untuk RS256; menggantikan HS256 |
-| `--jwt-secret-env` | `KARHUTLASQL_JWT_SECRET_ENV` | `KARHUTLASQL_JWT_SECRET` | nama env var berisi secret HS256 (≥ 32 byte); kosong = acak per proses |
-| `--jwt-ttl` | `KARHUTLASQL_JWT_TTL` | `8h0m0s` | umur token (maks 24h) |
+| `--access-log-flush-interval` | `KARHUTLASQL_ACCESS_LOG_FLUSH_INTERVAL` | `30s` | access-history flush interval to the archive |
+| `--allowed-directories` | `KARHUTLASQL_ALLOWED_DIRECTORIES` | — | paths/URL prefixes DuckDB may access (COPY/read_*/ATTACH), e.g. /data/export/,s3://lake/; anything else is rejected |
+| `--archive-dir` | `KARHUTLASQL_ARCHIVE_DIR` | — | access-history & report archive in a local directory (dev; not WORM) |
+| `--archive-retention` | `KARHUTLASQL_ARCHIVE_RETENTION` | `87600h0m0s` | COMPLIANCE object-lock retention for archive objects (default 10 years) |
+| `--archive-s3-access-key-env` | `KARHUTLASQL_ARCHIVE_S3_ACCESS_KEY_ENV` | `KARHUTLASQL_ARCHIVE_ACCESS_KEY` | name of the env var holding the archive S3 access key |
+| `--archive-s3-bucket` | `KARHUTLASQL_ARCHIVE_S3_BUCKET` | — | archive bucket (object-lock enabled) |
+| `--archive-s3-endpoint` | `KARHUTLASQL_ARCHIVE_S3_ENDPOINT` | — | archive S3/MinIO endpoint (host:port); bucket must have object-lock |
+| `--archive-s3-insecure` | `KARHUTLASQL_ARCHIVE_S3_INSECURE` | `false` | archive S3 over plain http (dev) |
+| `--archive-s3-region` | `KARHUTLASQL_ARCHIVE_S3_REGION` | `us-east-1` | archive bucket region |
+| `--archive-s3-secret-key-env` | `KARHUTLASQL_ARCHIVE_S3_SECRET_KEY_ENV` | `KARHUTLASQL_ARCHIVE_SECRET_KEY` | name of the env var holding the archive S3 secret key |
+| `--audit-log-dir` | `KARHUTLASQL_AUDIT_LOG_DIR` | — | daily audit log directory (0600); empty = stdout |
+| `--audit-log-sql` | `KARHUTLASQL_AUDIT_LOG_SQL` | `false` | include SQL text in the audit log (default SHA-256 only; beware of PII) |
+| `--backup-interval` | `KARHUTLASQL_BACKUP_INTERVAL` | `0s` | scheduled backup interval to the archive (EXPORT DATABASE of DuckDB catalogs + DuckLake snapshots); 0 = only the backup DoAction |
+| `--backup-retention-daily` | `KARHUTLASQL_BACKUP_RETENTION_DAILY` | `168h0m0s` | object-lock retention of daily backups |
+| `--backup-retention-monthly` | `KARHUTLASQL_BACKUP_RETENTION_MONTHLY` | `9600h0m0s` | object-lock retention of monthly backups (1st of the month UTC) |
+| `--backup-retention-weekly` | `KARHUTLASQL_BACKUP_RETENTION_WEEKLY` | `840h0m0s` | object-lock retention of weekly backups (Sunday UTC) |
+| `--backup-staging-dir` | `KARHUTLASQL_BACKUP_STAGING_DIR` | — | temporary local directory for EXPORT (added to allowed-directories automatically); default &lt;state-dir&gt;/backup-staging |
+| `--classification-file` | `KARHUTLASQL_CLASSIFICATION_FILE` | — | classification YAML (column tags + masks, G-03); empty = no masking. Reload: SIGHUP |
+| `--config` | `KARHUTLASQL_CONFIG` | — | YAML config file (precedence: flag &gt; env &gt; file) |
+| `--database-filename` | `KARHUTLASQL_DATABASE_FILENAME` | — | .duckdb file; empty = in-memory |
+| `--dq-max-age` | `KARHUTLASQL_DQ_MAX_AGE` | `26h0m0s` | report DQ gate: the GX validation of each source table must be younger than this; 0 = gate disabled |
+| `--duckdb-secrets-file` | `KARHUTLASQL_DUCKDB_SECRETS_FILE` | — | YAML of DuckDB TEMPORARY SECRETs injected by the server (secret values from env; scope must be inside allowed-directories) |
+| `--four-eyes` | `KARHUTLASQL_FOUR_EYES` | `true` | policy/classification changes take effect after 2 approvals by different admins (G-11) |
+| `--health-check-query` | `KARHUTLASQL_HEALTH_CHECK_QUERY` | `SELECT 1` | query for gRPC health and /healthz |
+| `--host` | `KARHUTLASQL_HOST` | `0.0.0.0` | listen address |
+| `--init-sql-file` | `KARHUTLASQL_INIT_SQL_FILE` | — | SQL file executed at startup (INSTALL/LOAD/ATTACH) |
+| `--jwt-private-key-file` | `KARHUTLASQL_JWT_PRIVATE_KEY_FILE` | — | RSA PEM key (0600) for RS256; replaces HS256 |
+| `--jwt-secret-env` | `KARHUTLASQL_JWT_SECRET_ENV` | `KARHUTLASQL_JWT_SECRET` | name of the env var holding the HS256 secret (≥ 32 bytes); empty = random per process |
+| `--jwt-ttl` | `KARHUTLASQL_JWT_TTL` | `8h0m0s` | token lifetime (max 24h) |
 | `--log-level` | `KARHUTLASQL_LOG_LEVEL` | `info` | debug\|info\|warn\|error |
-| `--mask-hmac-key-env` | `KARHUTLASQL_MASK_HMAC_KEY_ENV` | `KARHUTLASQL_MASK_KEY` | nama env var berisi kunci HMAC mask hash_hmac (≥ 32 byte) |
-| `--max-concurrent` | `KARHUTLASQL_MAX_CONCURRENT` | `8` | statement berjalan bersamaan di resource group default; 0 = tanpa batas |
-| `--mcp-max-rows` | `KARHUTLASQL_MCP_MAX_ROWS` | `500` | batas baris per hasil tool MCP (di atas batas profil ai_sandbox) |
-| `--mcp-port` | `KARHUTLASQL_MCP_PORT` | `0` | port server MCP Streamable HTTP (/mcp, Bearer token; TLS mengikuti gRPC) untuk agen AI; 0 = mati |
-| `--mcp-resource-url` | `KARHUTLASQL_MCP_RESOURCE_URL` | — | URL publik endpoint MCP (mis. https://kq.bank.local:8443/mcp) untuk metadata OAuth RFC 9728; kosong = tanpa metadata |
-| `--metrics-port` | `KARHUTLASQL_METRICS_PORT` | `9090` | port HTTP admin (/healthz); 0 = mati |
-| `--migrations-catalog` | `KARHUTLASQL_MIGRATIONS_CATALOG` | — | catalog tabel pelacak karhutla_schema_migrations; kosong = catalog default |
-| `--migrations-dir` | `KARHUTLASQL_MIGRATIONS_DIR` | — | direktori schema migration <versi>_<nama>.sql yang diterapkan saat start (sekali, berurutan, transaksi per file) |
-| `--mtls-ca` | `KARHUTLASQL_MTLS_CA` | — | CA PEM untuk verifikasi client cert (mTLS wajib bila diset) |
-| `--oidc-audience` | `KARHUTLASQL_OIDC_AUDIENCE` | `karhutlasql` | nilai wajib di claim aud token OIDC |
-| `--oidc-groups-claim` | `KARHUTLASQL_OIDC_GROUPS_CLAIM` | `groups` | claim grup OIDC |
-| `--oidc-issuer` | `KARHUTLASQL_OIDC_ISSUER` | — | issuer OIDC (Keycloak/Entra/Okta); kosong = OIDC mati |
-| `--oidc-username-claim` | `KARHUTLASQL_OIDC_USERNAME_CLAIM` | `preferred_username` | claim nama user OIDC (fallback sub) |
-| `--otel-endpoint` | `KARHUTLASQL_OTEL_ENDPOINT` | — | collector OTLP gRPC (host:port) untuk tracing OpenTelemetry; header auth lewat env OTEL_EXPORTER_OTLP_HEADERS; kosong = mati |
-| `--otel-insecure` | `KARHUTLASQL_OTEL_INSECURE` | `false` | OTLP tanpa TLS (dev) |
-| `--otel-sample-ratio` | `KARHUTLASQL_OTEL_SAMPLE_RATIO` | `1` | rasio sampling trace baru (0..1); trace dari klien mengikuti keputusan induk |
-| `--password-env` | `KARHUTLASQL_PASSWORD_ENV` | `KARHUTLASQL_PASSWORD` | nama env var berisi password (plaintext atau hash bcrypt) |
-| `--policy-file` | `KARHUTLASQL_POLICY_FILE` | — | policy YAML (spec §5.3); kosong = hanya user lokal sebagai admin (dev). Reload: SIGHUP |
-| `--port` | `KARHUTLASQL_PORT` | `31337` | port gRPC Flight SQL |
-| `--print-queries` | `KARHUTLASQL_PRINT_QUERIES` | `false` | catat teks SQL ke log |
-| `--query-profiling` | `KARHUTLASQL_QUERY_PROFILING` | `false` | profiling DuckDB per statement untuk peak memory & plan hash di karhutla_query_history() (mahal: +~13% waktu TPC-H SF10, ADR 33) |
-| `--query-timeout` | `KARHUTLASQL_QUERY_TIMEOUT` | `0` | batas eksekusi statement dalam detik; 0 = tanpa batas |
-| `--queue-size` | `KARHUTLASQL_QUEUE_SIZE` | `64` | statement yang boleh antre di resource group default; penuh → RESOURCE_EXHAUSTED |
-| `--queue-timeout` | `KARHUTLASQL_QUEUE_TIMEOUT` | `1m0s` | batas menunggu slot di resource group default; 0 = tanpa batas |
-| `--rate-burst` | `KARHUTLASQL_RATE_BURST` | `20` | burst token bucket rate limit |
-| `--rate-limit` | `KARHUTLASQL_RATE_LIMIT` | `0` | request RPC per detik per user (token bucket); 0 = mati |
-| `--report-signing-key-file` | `KARHUTLASQL_REPORT_SIGNING_KEY_FILE` | — | kunci privat Ed25519 PKCS#8 PEM (0600) penanda tangan manifest report |
-| `--report-signing-vault-key` | `KARHUTLASQL_REPORT_SIGNING_VAULT_KEY` | — | kunci Ed25519 di Vault Transit <mount>/<nama> (menggantikan --report-signing-key-file; env VAULT_ADDR, VAULT_TOKEN, VAULT_NAMESPACE, VAULT_CACERT) |
-| `--reports-file` | `KARHUTLASQL_REPORTS_FILE` | — | definisi report (reports.yaml) untuk karhutla_report_run() |
-| `--result-cache-max-bytes` | `KARHUTLASQL_RESULT_CACHE_MAX_BYTES` | `268435456` | batas total byte result cache (LRU) |
-| `--result-cache-max-entry-bytes` | `KARHUTLASQL_RESULT_CACHE_MAX_ENTRY_BYTES` | `20971520` | hasil lebih besar dari ini tidak di-cache |
-| `--result-cache-ttl` | `KARHUTLASQL_RESULT_CACHE_TTL` | `0s` | umur hasil SELECT di result cache (per identitas, invalidasi saat data berubah); 0 = mati |
-| `--revocation-sync-interval` | `KARHUTLASQL_REVOCATION_SYNC_INTERVAL` | `5s` | interval sinkron kill session antar instance lewat arsip (revocations/); berlaku bila arsip dikonfigurasi |
-| `--session-idle-timeout` | `KARHUTLASQL_SESSION_IDLE_TIMEOUT` | `1h0m0s` | sesi tanpa aktivitas dibuang dari registry (statement/prepared handle-nya ikut hilang) |
-| `--slow-query-threshold` | `KARHUTLASQL_SLOW_QUERY_THRESHOLD` | `10s` | eksekusi (di luar antre) selama ini dicatat ke log slow_query; 0 = mati |
-| `--state-dir` | `KARHUTLASQL_STATE_DIR` | — | direktori state server (persetujuan policy, 0700); default <dir database>/karhutlasql-state |
-| `--streaming-buffer-size` | `KARHUTLASQL_STREAMING_BUFFER_SIZE` | `64MB` | buffer hasil streaming DuckDB per statement (batas memori hasil yang belum dibaca klien); 0 = materialisasi penuh (ADR 34) |
-| `--tls-cert` | `KARHUTLASQL_TLS_CERT` | — | sertifikat server PEM |
-| `--tls-key` | `KARHUTLASQL_TLS_KEY` | — | kunci server PEM (0600) |
-| `--tls-self-signed` | `KARHUTLASQL_TLS_SELF_SIGNED` | `false` | TLS dengan sertifikat self-signed di memori (dev/container; klien --tls-skip-verify) |
-| `--uc-advertised-endpoint` | `KARHUTLASQL_UC_ADVERTISED_ENDPOINT` | — | endpoint Flight SQL untuk property karhutla.endpoint; kosong = grpc[+tls]://host:port |
-| `--uc-endpoint` | `KARHUTLASQL_UC_ENDPOINT` | — | URL Unity Catalog OSS (mis. http://uc:8080) untuk sinkron metadata satu arah; kosong = mati |
-| `--uc-sync-interval` | `KARHUTLASQL_UC_SYNC_INTERVAL` | `15m0s` | interval sinkron penuh ke Unity Catalog |
-| `--uc-token-env` | `KARHUTLASQL_UC_TOKEN_ENV` | `KARHUTLASQL_UC_TOKEN` | nama env var bearer token Unity Catalog (opsional) |
-| `--username` | `KARHUTLASQL_USERNAME` | — | user lokal (wajib) |
-| `--vault-token-file` | `KARHUTLASQL_VAULT_TOKEN_FILE` | — | file token Vault (mis. sink Vault Agent, 0600; dibaca ulang tiap tanda tangan); kosong = env VAULT_TOKEN |
-| `--verified-queries-file` | `KARHUTLASQL_VERIFIED_QUERIES_FILE` | — | YAML verified queries + semantic model (karhutla_verified_queries(), resource MCP) |
+| `--mask-hmac-key-env` | `KARHUTLASQL_MASK_HMAC_KEY_ENV` | `KARHUTLASQL_MASK_KEY` | name of the env var holding the HMAC key for the hash_hmac mask (≥ 32 bytes) |
+| `--max-concurrent` | `KARHUTLASQL_MAX_CONCURRENT` | `8` | concurrently running statements in the default resource group; 0 = unlimited |
+| `--mcp-max-rows` | `KARHUTLASQL_MCP_MAX_ROWS` | `500` | row limit per MCP tool result (on top of the ai_sandbox profile limits) |
+| `--mcp-port` | `KARHUTLASQL_MCP_PORT` | `0` | MCP Streamable HTTP server port (/mcp, Bearer token; TLS follows gRPC) for AI agents; 0 = disabled |
+| `--mcp-resource-url` | `KARHUTLASQL_MCP_RESOURCE_URL` | — | public URL of the MCP endpoint (e.g. https://kq.bank.local:8443/mcp) for RFC 9728 OAuth metadata; empty = no metadata |
+| `--metrics-port` | `KARHUTLASQL_METRICS_PORT` | `9090` | admin HTTP port (/healthz); 0 = disabled |
+| `--migrations-catalog` | `KARHUTLASQL_MIGRATIONS_CATALOG` | — | catalog of the karhutla_schema_migrations tracking table; empty = default catalog |
+| `--migrations-dir` | `KARHUTLASQL_MIGRATIONS_DIR` | — | directory of &lt;version&gt;_&lt;name&gt;.sql schema migrations applied at startup (once, in order, one transaction per file) |
+| `--mtls-ca` | `KARHUTLASQL_MTLS_CA` | — | CA PEM to verify client certificates (mTLS required when set) |
+| `--oidc-audience` | `KARHUTLASQL_OIDC_AUDIENCE` | `karhutlasql` | value required in the aud claim of OIDC tokens |
+| `--oidc-groups-claim` | `KARHUTLASQL_OIDC_GROUPS_CLAIM` | `groups` | OIDC groups claim |
+| `--oidc-issuer` | `KARHUTLASQL_OIDC_ISSUER` | — | OIDC issuer (Keycloak/Entra/Okta); empty = OIDC disabled |
+| `--oidc-username-claim` | `KARHUTLASQL_OIDC_USERNAME_CLAIM` | `preferred_username` | OIDC user name claim (falls back to sub) |
+| `--otel-endpoint` | `KARHUTLASQL_OTEL_ENDPOINT` | — | OTLP gRPC collector (host:port) for OpenTelemetry tracing; auth headers via env OTEL_EXPORTER_OTLP_HEADERS; empty = disabled |
+| `--otel-insecure` | `KARHUTLASQL_OTEL_INSECURE` | `false` | OTLP without TLS (dev) |
+| `--otel-sample-ratio` | `KARHUTLASQL_OTEL_SAMPLE_RATIO` | `1` | sampling ratio for new traces (0..1); traces from clients follow the parent decision |
+| `--password-env` | `KARHUTLASQL_PASSWORD_ENV` | `KARHUTLASQL_PASSWORD` | name of the env var holding the password (plaintext or bcrypt hash) |
+| `--policy-file` | `KARHUTLASQL_POLICY_FILE` | — | policy YAML (spec §5.3); empty = only the local user, as admin (dev). Reload: SIGHUP |
+| `--port` | `KARHUTLASQL_PORT` | `31337` | Flight SQL gRPC port |
+| `--print-queries` | `KARHUTLASQL_PRINT_QUERIES` | `false` | log SQL text |
+| `--query-profiling` | `KARHUTLASQL_QUERY_PROFILING` | `false` | per-statement DuckDB profiling for peak memory & plan hash in karhutla_query_history() (costly: +~13% TPC-H SF10 time, ADR 33) |
+| `--query-timeout` | `KARHUTLASQL_QUERY_TIMEOUT` | `0` | statement execution limit in seconds; 0 = unlimited |
+| `--queue-size` | `KARHUTLASQL_QUEUE_SIZE` | `64` | statements allowed to queue in the default resource group; full → RESOURCE_EXHAUSTED |
+| `--queue-timeout` | `KARHUTLASQL_QUEUE_TIMEOUT` | `1m0s` | max wait for a slot in the default resource group; 0 = unlimited |
+| `--rate-burst` | `KARHUTLASQL_RATE_BURST` | `20` | rate limit token bucket burst |
+| `--rate-limit` | `KARHUTLASQL_RATE_LIMIT` | `0` | RPC requests per second per user (token bucket); 0 = disabled |
+| `--report-signing-key-file` | `KARHUTLASQL_REPORT_SIGNING_KEY_FILE` | — | Ed25519 PKCS#8 PEM private key (0600) that signs report manifests |
+| `--report-signing-vault-key` | `KARHUTLASQL_REPORT_SIGNING_VAULT_KEY` | — | Ed25519 key in Vault Transit &lt;mount&gt;/&lt;name&gt; (replaces --report-signing-key-file; env VAULT_ADDR, VAULT_TOKEN, VAULT_NAMESPACE, VAULT_CACERT) |
+| `--reports-file` | `KARHUTLASQL_REPORTS_FILE` | — | report definitions (reports.yaml) for karhutla_report_run() |
+| `--result-cache-max-bytes` | `KARHUTLASQL_RESULT_CACHE_MAX_BYTES` | `268435456` | total byte limit of the result cache (LRU) |
+| `--result-cache-max-entry-bytes` | `KARHUTLASQL_RESULT_CACHE_MAX_ENTRY_BYTES` | `20971520` | results larger than this are not cached |
+| `--result-cache-ttl` | `KARHUTLASQL_RESULT_CACHE_TTL` | `0s` | lifetime of SELECT results in the result cache (per identity, invalidated when data changes); 0 = disabled |
+| `--revocation-sync-interval` | `KARHUTLASQL_REVOCATION_SYNC_INTERVAL` | `5s` | interval for syncing session kills across instances via the archive (revocations/); applies when an archive is configured |
+| `--session-idle-timeout` | `KARHUTLASQL_SESSION_IDLE_TIMEOUT` | `1h0m0s` | idle sessions are dropped from the registry (their statement/prepared handles go with them) |
+| `--slow-query-threshold` | `KARHUTLASQL_SLOW_QUERY_THRESHOLD` | `10s` | executions (excluding queueing) at least this long are logged as slow_query; 0 = disabled |
+| `--state-dir` | `KARHUTLASQL_STATE_DIR` | — | server state directory (policy approvals, 0700); default &lt;database dir&gt;/karhutlasql-state |
+| `--streaming-buffer-size` | `KARHUTLASQL_STREAMING_BUFFER_SIZE` | `64MB` | DuckDB streaming result buffer per statement (memory bound for results not yet read by the client); 0 = fully materialize (ADR 34) |
+| `--tls-cert` | `KARHUTLASQL_TLS_CERT` | — | server certificate PEM |
+| `--tls-key` | `KARHUTLASQL_TLS_KEY` | — | server key PEM (0600) |
+| `--tls-self-signed` | `KARHUTLASQL_TLS_SELF_SIGNED` | `false` | TLS with an in-memory self-signed certificate (dev/container; client --tls-skip-verify) |
+| `--uc-advertised-endpoint` | `KARHUTLASQL_UC_ADVERTISED_ENDPOINT` | — | Flight SQL endpoint for the karhutla.endpoint property; empty = grpc[+tls]://host:port |
+| `--uc-endpoint` | `KARHUTLASQL_UC_ENDPOINT` | — | Unity Catalog OSS URL (e.g. http://uc:8080) for one-way metadata sync; empty = disabled |
+| `--uc-sync-interval` | `KARHUTLASQL_UC_SYNC_INTERVAL` | `15m0s` | full sync interval to Unity Catalog |
+| `--uc-token-env` | `KARHUTLASQL_UC_TOKEN_ENV` | `KARHUTLASQL_UC_TOKEN` | name of the env var holding the Unity Catalog bearer token (optional) |
+| `--username` | `KARHUTLASQL_USERNAME` | — | local user (required) |
+| `--vault-token-file` | `KARHUTLASQL_VAULT_TOKEN_FILE` | — | Vault token file (e.g. a Vault Agent sink, 0600; re-read on every signature); empty = env VAULT_TOKEN |
+| `--verified-queries-file` | `KARHUTLASQL_VERIFIED_QUERIES_FILE` | — | YAML of verified queries + semantic model (karhutla_verified_queries(), MCP resources) |

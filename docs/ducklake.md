@@ -1,41 +1,43 @@
 # DuckLake multi-writer
 
-Topologi v2 (arsitektur §8, ADR 35): beberapa instance KarhutlaSQL menulis ke
-satu **DuckLake** — metadata catalog di Postgres, file data Parquet di
-S3/MinIO. Setiap instance tetap proses DuckDB sendiri, jadi beban dipisah per
-**kelas** (mis. `interactive` dan `batch`): memori dan antrean satu kelas
-tidak mengganggu kelas lain, sedangkan data, policy, classification, report,
-dan arsip sama untuk semua kelas.
+Topology v2 (architecture §8, ADR 35): several KarhutlaSQL instances write to
+one **DuckLake** — the metadata catalog in Postgres, data files as Parquet in
+S3/MinIO. Each instance is still its own DuckDB process, so load is split per
+**class** (e.g. `interactive` and `batch`): memory and the queue of one class
+do not disturb another, while data, policy, classification, reports, and the
+archive are the same for every class.
 
 ```
-klien interactive ─► instance interactive ─┐            ┌─► Postgres (metadata, snapshot)
-klien batch/report ─► instance batch ───────┼─ DuckLake ─┤
-                                            │            └─► MinIO s3://lake/data/ (Parquet)
-             policy/classification/reports ─┘ arsip bersama (access history, report, dq)
+interactive clients ─► interactive instance ─┐            ┌─► Postgres (metadata, snapshots)
+batch/report clients ─► batch instance ───────┼─ DuckLake ─┤
+                                              │            └─► MinIO s3://lake/data/ (Parquet)
+            policy/classification/reports ────┘ shared archive (access history, reports, dq)
 ```
 
-DuckLake memakai optimistic concurrency: commit bersamaan dari instance
-berbeda di-retry otomatis; setiap commit menjadi snapshot yang bisa dibaca
-lagi (`AT (VERSION => n)`) — dasar [time travel report](reports.md#time-travel-ducklake).
+DuckLake uses optimistic concurrency: concurrent commits from different
+instances are retried automatically; every commit becomes a snapshot that can
+be read again (`AT (VERSION => n)`) — the basis for
+[report time travel](reports.md#time-travel-ducklake).
 
 ## Image
 
-Image default statis tidak bisa memuat ekstensi DuckDB (ADR 19). DuckLake
-memakai varian `lake`: binary dinamis di `distroless/cc` dengan ekstensi
-`ducklake`, `postgres_scanner`, dan `httpfs` sudah terpasang saat build
-(runtime tidak pernah `INSTALL` — guardrail G-07 menolaknya).
+The default static image cannot load DuckDB extensions (ADR 19). DuckLake
+uses the `lake` variant: a dynamic binary on `distroless/cc` with the
+`ducklake`, `postgres_scanner`, and `httpfs` extensions installed at build
+time (the runtime never runs `INSTALL` — guardrail G-07 rejects it).
 
 ```bash
 make docker-lake             # karhutlasql:dev-lake
 # air-gapped: --build-arg DUCKDB_EXTENSIONS_URL=http://mirror.internal/duckdb-ext
 ```
 
-`DUCKDB_VERSION` (build arg, default `v1.5.6`) harus sama dengan versi DuckDB
-di `go.mod`.
+`DUCKDB_VERSION` (build arg, default `v1.5.6`) must match the DuckDB version
+in `go.mod`.
 
-## Konfigurasi
+## Configuration
 
-Tidak ada flag baru; DuckLake di-attach lewat init SQL, kredensial lewat env:
+There are no new flags; DuckLake is attached via init SQL, credentials via
+env:
 
 ```sql
 -- init.sql (--init-sql-file)
@@ -44,7 +46,7 @@ ATTACH 'ducklake:postgres:host=lake-postgres dbname=lake user=karhutla' AS lake 
 ```
 
 ```yaml
-# secrets.yaml (--duckdb-secrets-file): TEMPORARY SECRET, nilai dari env
+# secrets.yaml (--duckdb-secrets-file): TEMPORARY SECRET, values from env
 secrets:
   - name: lake_data
     type: s3
@@ -54,17 +56,17 @@ secrets:
 ```
 
 ```bash
-export PGPASSWORD=...        # password Postgres dibaca libpq, tidak pernah ada di SQL/argv
+export PGPASSWORD=...        # the Postgres password is read by libpq, never in SQL/argv
 karhutlasql-server --init-sql-file init.sql --duckdb-secrets-file secrets.yaml \
   --allowed-directories s3://lake/data/ ...
 ```
 
-Setelah init, guardrail mengunci akses eksternal: hanya `DATA_PATH` di
-`--allowed-directories` yang bisa dibaca/ditulis, `ATTACH`/`INSTALL` lain
-ditolak.
+After init, the guardrail locks external access: only the `DATA_PATH` in
+`--allowed-directories` can be read/written; any other `ATTACH`/`INSTALL` is
+rejected.
 
-**Compose (dev):** profile `lake` menjalankan Postgres, MinIO, dan dua
-instance (`lake-interactive` :31337, `lake-batch` :31338):
+**Compose (dev):** the `lake` profile runs Postgres, MinIO, and two
+instances (`lake-interactive` :31337, `lake-batch` :31338):
 
 ```bash
 make docker-lake
@@ -72,9 +74,10 @@ export KARHUTLASQL_PASSWORD=... LAKE_PG_PASSWORD=... LAKE_S3_KEY_ID=... LAKE_S3_
 docker compose -f deploy/compose/compose.yaml --profile lake up -d lake-interactive lake-batch
 ```
 
-**Helm:** satu release per kelas beban dengan nilai `ducklake` yang sama
-(`deploy/helm/karhutlasql/examples/lake-*.yaml`). Secret
-`ducklake.existingSecret` berisi `pg-password`, `s3-key-id`, `s3-secret`.
+**Helm:** one release per load class with the same `ducklake` values
+(`deploy/helm/karhutlasql/examples/lake-*.yaml`). The
+`ducklake.existingSecret` Secret holds `pg-password`, `s3-key-id`,
+`s3-secret`.
 
 ```bash
 helm install kq-interactive deploy/helm/karhutlasql -f examples/lake-common.yaml -f examples/lake-interactive.yaml
@@ -83,43 +86,44 @@ helm install kq-batch       deploy/helm/karhutlasql -f examples/lake-common.yaml
 
 ## Governance
 
-Tabel DuckLake di-govern seperti tabel lain (grant per catalog/tabel,
-masking, RLS, access history). Rencana `DUCKLAKE_SCAN` di EXPLAIN DuckDB hanya
-memuat nama tabel tanpa catalog/schema; server mengambil nama lengkapnya dari
-plan terserialisasi (`json_serialize_plan`). Bila satu statement membaca dua
-tabel DuckLake dengan nama sama di schema/catalog berbeda (mis.
-`lake.raw.kredit` dan `lake.mart.kredit`), scan tidak bisa dibedakan dan
-statement butuh izin admin (fail-closed) — beri alias lewat view/CTE di
-tabel yang namanya unik, atau pecah statement.
+DuckLake tables are governed like any other table (grants per catalog/table,
+masking, RLS, access history). The `DUCKLAKE_SCAN` in DuckDB's EXPLAIN plan
+only contains the table name without catalog/schema; the server takes the
+full name from the serialized plan (`json_serialize_plan`). If one statement
+reads two DuckLake tables with the same name in different schemas/catalogs
+(e.g. `lake.raw.kredit` and `lake.mart.kredit`), the scans cannot be told
+apart and the statement needs admin permission (fail-closed) — alias them via
+a view/CTE over a uniquely named table, or split the statement.
 
-`AT (VERSION => n)` pada tabel ber-mask/RLS diperbolehkan: klausa AT
-dipindah ke scan di dalam subquery governance, jadi data lampau tetap
-ter-mask.
+`AT (VERSION => n)` on masked/RLS tables is allowed: the AT clause is moved
+to the scan inside the governance subquery, so historical data stays masked.
 
-## Perilaku multi-instance
+## Multi-instance behaviour
 
-| Fitur | Perilaku |
+| Feature | Behaviour |
 |---|---|
-| Data & time travel | Bersama (DuckLake) |
-| Policy, classification, reports | Sama bila dari ConfigMap/file yang sama; tiap instance memuat sendiri |
-| Access history, report, hasil DQ | Arsip bersama; hasil `dq_publish` di instance lain dimuat saat DQ gate report & `karhutla_dq_results()` |
-| Sesi | Per instance (`karhutla_sessions()` menampilkan sesi instance itu) |
-| `kill_session`, revoke token | Bersama lewat arsip: berlaku di semua instance dalam `--revocation-sync-interval` (5s), dari instance mana pun ([monitoring](monitoring.md#sesi)) |
-| Token login lokal | Berlaku lintas instance hanya bila `KARHUTLASQL_JWT_SECRET` sama |
-| Four-eyes (G-11) | State per instance (`--state-dir`): perubahan policy disetujui di tiap instance |
-| Tabel lokal (`--database-filename`) | Per instance; pakai `:memory:` bila semua data di lake |
+| Data & time travel | Shared (DuckLake) |
+| Policy, classification, reports | Identical when loaded from the same ConfigMap/file; each instance loads its own |
+| Access history, reports, DQ results | Shared archive; `dq_publish` results from another instance are loaded at report DQ gate time & by `karhutla_dq_results()` |
+| Sessions | Per instance (`karhutla_sessions()` shows that instance's sessions) |
+| `kill_session`, token revocation | Shared via the archive: takes effect on every instance within `--revocation-sync-interval` (5s), from any instance ([monitoring](monitoring.md#sessions)) |
+| Local login tokens | Valid across instances only if `KARHUTLASQL_JWT_SECRET` is the same |
+| Four-eyes (G-11) | Per-instance state (`--state-dir`): policy changes are approved on each instance |
+| Local tables (`--database-filename`) | Per instance; use `:memory:` when all data lives in the lake |
 
-Inisialisasi catalog DuckLake kosong oleh dua instance bersamaan bisa gagal
-di salah satunya (DDL Postgres bentrok); instance itu berhasil setelah
-restart (compose `restart: on-failure`, Kubernetes otomatis). Jalankan satu
-instance dulu pada deploy pertama untuk menghindarinya.
+Initializing an empty DuckLake catalog from two instances at the same time
+can fail on one of them (Postgres DDL conflict); that instance succeeds after
+a restart (compose `restart: on-failure`, automatic in Kubernetes). Start one
+instance first on the very first deployment to avoid it.
 
-## Operasional
+## Operations
 
-- **Retensi snapshot = horizon time travel.** `CALL ducklake_expire_snapshots(...)`
-  menghapus snapshot lama; report hanya bisa diulang pada snapshot yang masih
-  ada. Samakan retensi dengan kebutuhan audit laporan.
-- Insert kecil di-*inline* ke Postgres (`data_inlining_row_limit`); file
-  Parquet ditulis untuk batch besar. Pemeliharaan (`ducklake_merge_adjacent_files`,
-  `ducklake_cleanup_old_files`, flush inline) butuh izin admin.
-- Backup: dump Postgres metadata + versioning bucket data (backup bertingkat: Fase 8d).
+- **Snapshot retention = time-travel horizon.** `CALL ducklake_expire_snapshots(...)`
+  deletes old snapshots; a report can only be re-run on snapshots that still
+  exist. Align retention with your report audit requirements.
+- Small inserts are *inlined* into Postgres (`data_inlining_row_limit`);
+  Parquet files are written for large batches. Maintenance
+  (`ducklake_merge_adjacent_files`, `ducklake_cleanup_old_files`, inline
+  flush) needs admin permission.
+- Backup: Postgres metadata dump + data bucket versioning (tiered backup:
+  [backup](operations.md#tiered-backup)).

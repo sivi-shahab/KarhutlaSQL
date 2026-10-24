@@ -1,12 +1,15 @@
-# Diagram arsitektur
+# Architecture diagram
 
-Diagram interaktif: klik komponen untuk detail, **PATH** menelusuri jalur
-antar komponen, **LENS** menyorot satu jenis komponen, dan **Export**
-mengunduh PNG/SVG. Buka [layar penuh](diagram/arsitektur.html).
+An interactive diagram of every KarhutlaSQL component, the open-source tools
+behind each one, and how they connect. Click a component for details;
+**PATH** traces the route between components, **LENS** highlights one kind of
+component, **Export** downloads PNG/SVG, and the **SRC** badge on a component
+opens its source file on GitHub. Open it
+[full screen](https://sivi-shahab.github.io/KarhutlaSQL/diagram/architecture.html).
 
-<iframe src="../diagram/arsitektur.html" title="Diagram arsitektur KarhutlaSQL"
-        style="width:100%; height:1100px; border:1px solid #e5e7eb; border-radius:8px"></iframe>
+<iframe class="diagram-frame" src="/KarhutlaSQL/diagram/architecture.html" title="KarhutlaSQL architecture diagram" loading="lazy"></iframe>
 
-Sumber diagram: `docs/diagram/arsitektur.architecture.json` (dirender dengan
-[Archify](https://github.com/tt-a1i/archify)); perbarui JSON lalu render
-ulang bila arsitektur berubah. Rincian keputusan: `arsitektur.md` §10 (ADR).
+Diagram source: `docs/public/diagram/architecture.json` (rendered
+with [Archify](https://github.com/tt-a1i/archify)); update the JSON and
+re-render it when the architecture changes. Decision details:
+`arsitektur.md` §10 (ADRs) in the repository root.

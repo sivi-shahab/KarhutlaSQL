@@ -1,54 +1,54 @@
-# Policy & otorisasi
+# Policy & authorization
 
-`--policy-file policy.yaml` (reload: `kill -HUP <pid>`; file tidak valid → policy
-lama tetap aktif, audit `policy_reload` status `FAILED`). Tanpa policy file hanya
-user lokal (`--username`) yang diizinkan, sebagai admin — mode dev.
+`--policy-file policy.yaml` (reload: `kill -HUP <pid>`; an invalid file → the
+old policy stays active, audit `policy_reload` with status `FAILED`). Without a
+policy file only the local user (`--username`) is allowed, as admin — dev mode.
 
 ```yaml
-default: deny                 # wajib "deny"
-allow:                        # E-02, hanya untuk identitas OIDC; kosong = tolak semua OIDC
-  domains: [bankmega.com]     # email (email_verified) berakhiran @domain
+default: deny                 # must be "deny"
+allow:                        # E-02, for OIDC identities only; empty = reject all OIDC
+  domains: [bankmega.com]     # email (email_verified) ending in @domain
   emails: [vendor@partner.io]
   groups: [data-platform]
 roles:
   admin:   { catalogs: { "*": [read, write, admin] } }
   analyst: { catalogs: { warehouse: [read], sandbox: [read, write] } }
-subjects:                     # role = gabungan semua subject yang cocok
+subjects:                     # roles = union of all matching subjects
   - match: { claim: groups, equals: data-platform }
     roles: [admin]
   - match: { claim: email, endswith: "@bankmega.com" }
     roles: [analyst]
-  - match: { user: svc_dbt }  # hanya identitas lokal
+  - match: { user: svc_dbt }  # local identities only
     roles: [analyst]
 ```
 
-Field tak dikenal, aksi selain `read|write|admin`, claim selain
-`email|groups|sub`, dan role yang tidak didefinisikan → policy ditolak.
-Nama catalog case-insensitive.
+Unknown fields, actions other than `read|write|admin`, claims other than
+`email|groups|sub`, and undefined roles → the policy is rejected.
+Catalog names are case-insensitive.
 
-## Izin yang dibutuhkan statement
+## Permissions required per statement
 
-| Statement | Izin |
+| Statement | Permission |
 |---|---|
-| `SELECT` (termasuk sintaks DuckDB `FROM t SELECT …`) | `read` pada setiap catalog yang tabelnya dibaca — termasuk tabel di balik view |
-| `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ALTER` | `write` pada catalog target + `read` pada catalog sumber |
-| `EXPLAIN`, `COPY`, `ATTACH`/`DETACH`, `SET`, `PRAGMA`, `CALL`, `LOAD`/`INSTALL`, `EXPORT`, `PREPARE`/`EXECUTE` | `admin` pada `"*"` |
-| Table function selain `range`, `generate_series`, `unnest`, `karhutla_*` (mis. `read_csv`, `'file.csv'`, `glob`, `duckdb_*()`, `information_schema`) | `admin` pada `"*"` |
+| `SELECT` (including DuckDB syntax `FROM t SELECT …`) | `read` on every catalog whose tables are read — including tables behind views |
+| `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ALTER` | `write` on the target catalog + `read` on source catalogs |
+| `EXPLAIN`, `COPY`, `ATTACH`/`DETACH`, `SET`, `PRAGMA`, `CALL`, `LOAD`/`INSTALL`, `EXPORT`, `PREPARE`/`EXECUTE` | `admin` on `"*"` |
+| Table functions other than `range`, `generate_series`, `unnest`, `karhutla_*` (e.g. `read_csv`, `'file.csv'`, `glob`, `duckdb_*()`, `information_schema`) | `admin` on `"*"` |
 
-Nama 2 bagian `x.t` mengikuti DuckDB: catalog `x` bila ter-attach, selain itu
-schema `x` di catalog default. Statement tulis dengan sintaks khusus DuckDB
-(mis. `INSERT INTO t FROM s`) ditolak karena targetnya tidak bisa ditentukan —
-tulis ulang dengan SQL standar (`INSERT INTO t SELECT * FROM s`). Lebih dari
-satu statement per request ditolak.
+A two-part name `x.t` follows DuckDB: catalog `x` if attached, otherwise
+schema `x` in the default catalog. Write statements with DuckDB-specific
+syntax (e.g. `INSERT INTO t FROM s`) are rejected because their target cannot
+be determined — rewrite them in standard SQL (`INSERT INTO t SELECT * FROM s`).
+More than one statement per request is rejected.
 
-Ditolak → `PERMISSION_DENIED` (mis. `permission denied: write on catalog
-warehouse`) + audit `authz_deny`. Daftar catalog/schema/tabel di metadata Flight
-SQL (DBeaver, `\dt`) hanya menampilkan catalog yang boleh dibaca.
+Rejected → `PERMISSION_DENIED` (e.g. `permission denied: write on catalog
+warehouse`) + audit `authz_deny`. The catalog/schema/table lists in Flight SQL
+metadata (DBeaver, `\dt`) only show catalogs the caller may read.
 
-Role `admin` juga yang boleh melihat semua sesi dan kill session
-(`docs/monitoring.md`).
+The `admin` role is also the one allowed to see all sessions and kill sessions
+([monitoring](monitoring.md)).
 
-## Governance data (G-02 … G-06)
+## Data governance (G-02 … G-06)
 
 ```yaml
 roles:
@@ -56,60 +56,62 @@ roles:
     catalogs:
       warehouse: [read]               # catalog
       "sandbox.main": [read, write]   # schema
-      "hr.main.gaji": [read]          # tabel
-    unmask: [pii.phone]               # tag yang boleh dilihat mentah ("*" = semua)
+      "hr.main.gaji": [read]          # table
+    unmask: [pii.phone]               # tags that may be seen raw ("*" = all)
   cabang:
     catalogs: { warehouse.main.nasabah: [read] }
-    row_filters:                      # RLS: predikat SQL DuckDB per tabel
+    row_filters:                      # RLS: DuckDB SQL predicate per table
       warehouse.main.nasabah: "branch_code = {{claim.branch}}"
   ai_sandbox:
     catalogs: { warehouse: [read] }
-    select_only: true                 # selain SELECT → PERMISSION_DENIED
-    max_rows: 500                     # hasil dibungkus LIMIT 500
-    max_bytes: 104857600              # lewat batas → RESOURCE_EXHAUSTED
+    select_only: true                 # anything but SELECT → PERMISSION_DENIED
+    max_rows: 500                     # result wrapped in LIMIT 500
+    max_bytes: 104857600              # over the limit → RESOURCE_EXHAUSTED
     timeout: 60s                      # min(--query-timeout, timeout)
 ```
 
-- `{{claim.x}}` diganti literal string dari claim token OIDC (di-quote aman);
-  claim tidak ada → query ditolak. Email dipakai hanya bila `email_verified`.
-- Banyak role: tabel tanpa filter bila salah satu role pemberi izin baca tidak
-  punya `row_filters` untuk tabel itu, selain itu OR semua filter; kolom
-  terbuka bila salah satu role `unmask` tag-nya; batas profil = yang paling ketat.
-- Batas role `ai_sandbox` juga diterapkan pada setiap statement lewat
-  [server MCP](mcp.md), di atas role pemanggil (termasuk admin).
+- <span v-pre>`{{claim.x}}`</span> is replaced with a string literal from the
+  OIDC token claim (safely quoted); a missing claim → the query is rejected.
+  Email is used only when `email_verified`.
+- Multiple roles: a table is unfiltered if any role granting read on it has no
+  `row_filters` for that table, otherwise all filters are OR-ed; a column is
+  unmasked if any role `unmask`s its tag; profile limits = the strictest.
+- The `ai_sandbox` role limits are also applied to every statement through the
+  [MCP server](mcp.md), on top of the caller's roles (including admin).
 
 `--classification-file classification.yaml`:
 
 ```yaml
 tags:
   pii.nik:     { mask: partial, keep_last: 4 }   # ************1234
-  pii.phone:   { mask: hash_hmac }               # hex HMAC-SHA256, deterministik
+  pii.phone:   { mask: hash_hmac }               # hex HMAC-SHA256, deterministic
   pii.name:    { mask: redact }                  # [REDACTED]
-  fin.balance: { mask: "null" }                  # NULL bertipe asli
+  fin.balance: { mask: "null" }                  # NULL of the original type
 columns:
   warehouse.main.nasabah.nik: pii.nik
 ```
 
-`hash_hmac` butuh kunci ≥ 32 byte di env `--mask-hmac-key-env` (default
-`KARHUTLASQL_MASK_KEY`).
+`hash_hmac` needs a key of ≥ 32 bytes in the env var named by
+`--mask-hmac-key-env` (default `KARHUTLASQL_MASK_KEY`).
 
-Cara kerja: setiap tabel yang ber-mask/RLS bagi pemanggil diganti subquery
-terlindung, lalu plan DuckDB diverifikasi. Konsekuensinya:
+How it works: every table that is masked/row-filtered for the caller is
+replaced by a protected subquery, then the DuckDB plan is verified. Consequences:
 
-- Filter/JOIN pada kolom ter-mask memakai nilai ter-mask (`WHERE nik = '…'`
-  tidak menemukan apa pun) — nilai mentah tidak bisa ditebak lewat filter.
-- Hanya SELECT yang di-rewrite: `INSERT … SELECT` / `CREATE TABLE AS` dari
-  tabel ter-govern ditolak.
-- Membaca tabel ter-govern lewat view ditolak ("bypasses masking/row filter").
-- `PIVOT` top-level dan sintaks yang tidak bisa diserialisasi DuckDB ditolak
-  dengan pesan "cannot be rewritten for data governance".
+- Filters/JOINs on masked columns use the masked value (`WHERE nik = '…'`
+  finds nothing) — raw values cannot be guessed through filters.
+- Only SELECT is rewritten: `INSERT … SELECT` / `CREATE TABLE AS` from a
+  governed table is rejected.
+- Reading a governed table through a view is rejected ("bypasses masking/row filter").
+- Top-level `PIVOT` and syntax DuckDB cannot serialize are rejected with the
+  message "cannot be rewritten for data governance".
 
-## Resource group & antrean (G-08)
+## Resource groups & queuing (G-08)
 
-Setiap statement (selain query kontrol admin: hanya fungsi `karhutla_*` tanpa
-tabel, mis. `karhutla_sessions()`/`karhutla_kill_session()`) menunggu slot resource
-group-nya setelah lolos authz. Grup `default` diatur flag `--max-concurrent`
-(8), `--queue-size` (64), `--queue-timeout` (1m); grup lain di policy:
+Every statement (except admin control queries: only `karhutla_*` functions
+without tables, e.g. `karhutla_sessions()`/`karhutla_kill_session()`) waits for
+a slot in its resource group after passing authz. The `default` group is set by
+the flags `--max-concurrent` (8), `--queue-size` (64), `--queue-timeout` (1m);
+other groups in the policy:
 
 ```yaml
 resource_groups:
@@ -119,91 +121,91 @@ roles:
   ai_sandbox: { ..., resource_group: ai }
 ```
 
-- Grup dipilih dari role pertama (urutan `subjects`) yang menyebut
-  `resource_group`; tanpa itu → `default` (bisa di-override di
-  `resource_groups.default`). Selector by claim = lewat `subjects` → role.
-- Antrean FIFO; antrean penuh atau lewat `queue_timeout` →
-  `RESOURCE_EXHAUSTED`; kill session saat antre → `CANCELLED`.
-- `timeout` grup = batas eksekusi (di luar waktu antre); efektif
-  min(`--query-timeout`, timeout role, timeout grup).
-- `max_concurrent: 0` = tanpa batas. Memori per grup **tidak** ada:
-  `memory_limit` DuckDB berlaku global (ADR 26).
-- Reload SIGHUP: grup yang berubah memakai semaphore baru; statement yang
-  sedang jalan melepas slot lamanya.
+- The group is taken from the first role (in `subjects` order) that names a
+  `resource_group`; otherwise → `default` (can be overridden in
+  `resource_groups.default`). Selection by claim = via `subjects` → role.
+- FIFO queue; a full queue or exceeding `queue_timeout` →
+  `RESOURCE_EXHAUSTED`; killing a session while queued → `CANCELLED`.
+- The group `timeout` = execution limit (excluding queue time); effective
+  min(`--query-timeout`, role timeout, group timeout).
+- `max_concurrent: 0` = unlimited. There is **no** per-group memory limit:
+  DuckDB's `memory_limit` applies globally (ADR 26).
+- SIGHUP reload: changed groups use a new semaphore; running statements
+  release their old slot.
 
-Rate limit per user: `--rate-limit <req/detik>` + `--rate-burst` (token
-bucket, 0 = mati) menghitung setiap RPC — satu query Flight SQL = 2 RPC
-(GetFlightInfo + DoGet). Lewat batas → `RESOURCE_EXHAUSTED`
+Per-user rate limit: `--rate-limit <req/second>` + `--rate-burst` (token
+bucket, 0 = off) counts every RPC — one Flight SQL query = 2 RPCs
+(GetFlightInfo + DoGet). Over the limit → `RESOURCE_EXHAUSTED`
 ("rate limit exceeded").
 
-## Kuota per tim
+## Per-team quotas
 
 ```yaml
 quotas:
-  team_claim: department     # claim token → nama tim; tanpa claim (termasuk user lokal) → tim "default"
-  interval: 24h              # jendela tetap, mulai kelipatan interval sejak epoch (24h = tengah malam UTC)
+  team_claim: department     # token claim → team name; no claim (including local users) → team "default"
+  interval: 24h              # fixed window, starting at multiples of interval since the epoch (24h = UTC midnight)
   teams:
     risk:    { max_queries: 5000, max_exec_seconds: 7200, max_bytes: 50000000000 }
-    default: { max_queries: 1000 }   # juga untuk tim yang tidak terdaftar
+    default: { max_queries: 1000 }   # also for unlisted teams
 ```
 
-Batas (`max_queries`, `max_exec_seconds`, `max_rows`, `max_bytes`; 0 = tanpa
-batas) dicek sebelum eksekusi: bila pemakaian tim di jendela berjalan sudah
-mencapai batas → `RESOURCE_EXHAUSTED` ("quota exceeded"). Statement yang
-sedang berjalan boleh melewati batas. Query kontrol admin (kill/monitoring)
-tidak terkena kuota. Penghitung per instance, reset saat restart; pemakaian
-untuk chargeback: [monitoring](monitoring.md#kuota-chargeback-per-tim).
+Limits (`max_queries`, `max_exec_seconds`, `max_rows`, `max_bytes`; 0 =
+unlimited) are checked before execution: if the team's usage in the current
+window has already reached a limit → `RESOURCE_EXHAUSTED` ("quota exceeded").
+Statements already running may exceed the limit. Admin control queries
+(kill/monitoring) are not subject to quotas. Counters are per instance and
+reset on restart; usage for chargeback: [monitoring](monitoring.md#quotas-chargeback-per-team).
 
 ## Four-eyes (G-11)
 
-Dengan `--policy-file`/`--classification-file` dan `--four-eyes` (default
-aktif), isi file yang berubah **tidak** langsung aktif:
+With `--policy-file`/`--classification-file` and `--four-eyes` (enabled by
+default), changed file contents do **not** take effect immediately:
 
-1. Perubahan diajukan: `SIGHUP`, restart dengan file baru, `DoAction
-   reload_policy {"document":"policy"}`, atau `POST
-   /admin/policy/policy/reload`. Pengaju admin dihitung sebagai persetujuan
-   pertama; SIGHUP/restart tidak punya identitas (butuh dua persetujuan).
-2. Admin lain menyetujui hash yang sama: `DoAction approve_policy
-   {"document":"policy","hash":"<sha256>"}` atau `POST
-   /admin/policy/policy/approve?hash=…`. Identitas = `source:subject`
-   (`local:admin`, `oidc:dian`); identitas yang sama dua kali ditolak.
-3. Dua persetujuan berbeda → aktif. Status & isi pending: `DoAction
+1. A change is proposed: `SIGHUP`, restart with the new file, `DoAction
+   reload_policy {"document":"policy"}`, or `POST
+   /admin/policy/policy/reload`. An admin proposer counts as the first
+   approval; SIGHUP/restart has no identity (needs two approvals).
+2. Another admin approves the same hash: `DoAction approve_policy
+   {"document":"policy","hash":"<sha256>"}` or `POST
+   /admin/policy/policy/approve?hash=…`. Identity = `source:subject`
+   (`local:admin`, `oidc:dian`); the same identity twice is rejected.
+3. Two distinct approvals → active. Status & pending content: `DoAction
    policy_status` / `GET /admin/policy`.
 
-Isi yang disetujui disimpan di `--state-dir` (default
-`<dir database>/karhutlasql-state`, file 0600): restart memakai isi yang
-disetujui terakhir, file yang berbeda menjadi pending. Start pertama tanpa
-state = *bootstrap* (isi file aktif, tercatat `approved_by: bootstrap`).
-Semua langkah tercatat di audit `policy_change` (`pending`/`approved`/
-`activated`, `hash`). `--four-eyes=false` = reload langsung aktif (dev).
+Approved content is stored in `--state-dir` (default
+`<database dir>/karhutlasql-state`, 0600 files): a restart uses the last
+approved content, a differing file becomes pending. First start without
+state = *bootstrap* (file content active, recorded as `approved_by: bootstrap`).
+Every step is recorded in the `policy_change` audit (`pending`/`approved`/
+`activated`, `hash`). `--four-eyes=false` = reloads take effect immediately (dev).
 
-Batas: state dir dilindungi izin file, bukan tanda tangan — siapa pun yang
-bisa menulis state dir di host bisa melewatinya (GitOps signed commit belum
-ada, ADR 29).
+Limitation: the state dir is protected by file permissions, not signatures —
+anyone who can write the state dir on the host can bypass it (GitOps signed
+commits do not exist yet, ADR 29).
 
 ## Residency & egress (G-07)
 
-Setelah `--init-sql-file` dan injeksi secret, server mengunci akses
-eksternal DuckDB: hanya path/prefix URL di `--allowed-directories` (mis.
-`/data/export/,s3://lake/`) yang bisa dipakai `COPY`, `read_*`, `ATTACH`.
-Selain itu, `INSTALL`/`LOAD` ekstensi dan `CREATE PERSISTENT SECRET` ditolak
-oleh DuckDB sendiri — juga untuk admin — dengan `PERMISSION_DENIED`. Kunci
-ini tidak bisa dibuka lagi selama proses hidup (`SET
-enable_external_access`/`allowed_directories` ditolak DuckDB). Ekstensi
-yang dibutuhkan (mis. httpfs pada build dinamis) di-`LOAD` di init SQL.
+After `--init-sql-file` and secret injection, the server locks DuckDB's
+external access: only the paths/URL prefixes in `--allowed-directories` (e.g.
+`/data/export/,s3://lake/`) can be used by `COPY`, `read_*`, `ATTACH`.
+Beyond that, `INSTALL`/`LOAD` of extensions and `CREATE PERSISTENT SECRET` are
+rejected by DuckDB itself — for admins too — with `PERMISSION_DENIED`. This
+lock cannot be reopened while the process lives (`SET
+enable_external_access`/`allowed_directories` are rejected by DuckDB). Needed
+extensions (e.g. httpfs on a dynamic build) are `LOAD`ed in the init SQL.
 
-Secret DuckDB hanya diinjeksi server sebagai `TEMPORARY SECRET … SCOPE`
-dari `--duckdb-secrets-file` (nilai rahasia dari env, bukan file):
+DuckDB secrets are only injected by the server as `TEMPORARY SECRET … SCOPE`
+from `--duckdb-secrets-file` (secret values from env, not the file):
 
 ```yaml
 secrets:
   - name: lake
     type: s3
-    scope: s3://lake/            # wajib di dalam --allowed-directories
+    scope: s3://lake/            # must be inside --allowed-directories
     options: { endpoint: "minio:9000", url_style: path, use_ssl: "false" }
     env: { key_id: LAKE_KEY_ID, secret: LAKE_SECRET }
 ```
 
-Catatan: image distroless statis tidak bisa memuat httpfs (ADR 19), jadi
-secret bertipe `s3` hanya berlaku pada build dinamis atau image varian `lake`
-(`make docker-lake`, lihat [DuckLake](ducklake.md)).
+Note: the static distroless image cannot load httpfs (ADR 19), so `s3`
+secrets only work on a dynamic build or the `lake` image variant
+(`make docker-lake`, see [DuckLake](ducklake.md)).

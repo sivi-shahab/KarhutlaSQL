@@ -1,17 +1,17 @@
-# Report run bertanda tangan (G-10)
+# Signed report runs (G-10)
 
-`--reports-file reports.yaml` mendefinisikan report; `--report-signing-key-file`
-kunci privat Ed25519 PKCS#8 PEM (0600); hasil disimpan di arsip
-(`--archive-*`, lihat [monitoring](monitoring.md#access-history-per-kolom-g-05)).
+`--reports-file reports.yaml` defines the reports; `--report-signing-key-file`
+is an Ed25519 PKCS#8 PEM private key (0600); results are stored in the
+archive (`--archive-*`, see [monitoring](monitoring.md#per-column-access-history-g-05)).
 
 ```yaml
 reports:
   slik_bulanan:
-    roles: [admin, pelapor]          # siapa yang boleh menjalankan
+    roles: [admin, pelapor]          # who may run it
     sql: |
       SELECT branch_code, count(*) AS jumlah, sum(saldo) AS total
       FROM warehouse.main.nasabah GROUP BY 1 ORDER BY 1
-    asserts:                         # DQ gate: harus menghasilkan tepat satu true
+    asserts:                         # DQ gate: must return exactly one true
       - { name: nik_lengkap, sql: "SELECT count(*) = 0 FROM warehouse.main.nasabah WHERE nik IS NULL" }
 ```
 
@@ -20,64 +20,69 @@ CALL karhutla_report_run('slik_bulanan');
 -- report_id | name | snapshot_id | rows | location | result_sha256 | manifest_sha256
 ```
 
-Jalannya:
+How a run works:
 
-1. SQL report & assert di-otorisasi sebagai pemanggil — izin, masking, RLS,
-   batas profil berlaku seperti query biasa (report tidak menaikkan hak).
-2. Semua dieksekusi dalam **satu transaksi** DuckDB: sidik tiap tabel sumber
-   (`rows:<n>,hash:<jumlah hash baris>`), assert, lalu query report — assert
-   dan hasil melihat data yang sama. `snapshot_id` = hash sidik tabel + versi
-   DuckDB: sama selama data sama (pada versi DuckDB yang sama).
-3. **DQ gate Great Expectations** (Q-05, `--dq-max-age`, default 26h; `0` =
-   mati): untuk tiap tabel sumber, validasi GX terbaru (`dq_publish`) harus
-   pada `snapshot_id` tabel yang sama dengan transaksi ini, tanpa expectation
-   `critical` yang gagal, lebih muda dari `--dq-max-age`, dan tidak
-   dijalankan oleh identitas pemanggil report. Lihat `docs/data-quality.md`.
-4. Gate DQ atau assert gagal → `FAILED_PRECONDITION` ("report gate failed:
-   dq gate: …" / "assert …"), tidak ada file.
-5. Hasil Parquet + `manifest.json` + `manifest.json.sig` (Ed25519, base64)
-   disimpan di `reports/<name>/<report_id>/`, terkunci object-lock.
-6. Audit `report_run` (status, rows, hash manifest) dan access history
+1. The report SQL and asserts are authorized as the caller — permissions,
+   masking, RLS, and profile limits apply as for a normal query (a report
+   never elevates privileges).
+2. Everything runs in **one DuckDB transaction**: a fingerprint of each
+   source table (`rows:<n>,hash:<sum of row hashes>`), the asserts, then the
+   report query — asserts and results see the same data. `snapshot_id` =
+   hash of the table fingerprints + DuckDB version: identical as long as the
+   data is identical (on the same DuckDB version).
+3. **Great Expectations DQ gate** (Q-05, `--dq-max-age`, default 26h; `0` =
+   off): for each source table, the latest GX validation (`dq_publish`) must
+   be on the same table `snapshot_id` as this transaction, have no failed
+   `critical` expectation, be younger than `--dq-max-age`, and not have been
+   run by the identity calling the report. See [data quality](data-quality.md).
+4. DQ gate or assert fails → `FAILED_PRECONDITION` ("report gate failed:
+   dq gate: …" / "assert …"), no files are written.
+5. The Parquet result + `manifest.json` + `manifest.json.sig` (Ed25519,
+   base64) are stored under `reports/<name>/<report_id>/`, locked with
+   object-lock.
+6. Audit event `report_run` (status, rows, manifest hash) and access history
    (`kind = report`).
 
-Manifest: `report_id`, `name`, `user`, waktu, `snapshot_id`, sidik per tabel,
-`lake_snapshots` (ID snapshot DuckLake per catalog sumber, bila ada), `as_of`,
-versi engine, SHA-256 SQL definisi & SQL yang dieksekusi, hasil assert,
-`dq_validation_ids` (ID validasi GX yang dipakai gate), file hasil (sha256, rows, bytes),
-`key_id` (16 hex pertama sha256 kunci publik).
+Manifest: `report_id`, `name`, `user`, time, `snapshot_id`, per-table
+fingerprints, `lake_snapshots` (DuckLake snapshot ID per source catalog, if
+any), `as_of`, engine version, SHA-256 of the definition SQL & the executed
+SQL, assert results, `dq_validation_ids` (GX validation IDs used by the
+gate), result files (sha256, rows, bytes), `key_id` (first 16 hex of the
+public key's sha256).
 
-## Verifikasi
+## Verification
 
 ```bash
-openssl genpkey -algorithm ed25519 -out report.key && chmod 600 report.key   # sekali, simpan di vault
-openssl pkey -in report.key -pubout -out report.pub                          # dibagikan ke penerima
+openssl genpkey -algorithm ed25519 -out report.key && chmod 600 report.key   # once, keep it in a vault
+openssl pkey -in report.key -pubout -out report.pub                          # shared with recipients
 
 mc cp --recursive arsip/karhutla/reports/slik_bulanan/<report_id>/ ./laporan/
 karhutlasql-client --verify ./laporan/manifest.json --public-key report.pub
-# OK report <id> (slik_bulanan) by dian at …  → exit 0; tanda tangan/hash salah → exit 1
+# OK report <id> (slik_bulanan) by dian at …  → exit 0; bad signature/hash → exit 1
 ```
 
 ## Time travel (DuckLake)
 
-Report yang hanya membaca tabel DuckLake bisa dijalankan ulang pada snapshot
-lampau, mis. untuk posisi akhir bulan atau membuktikan ulang laporan yang
-sudah dikirim:
+A report that only reads DuckLake tables can be re-run on a past snapshot,
+e.g. for an end-of-month position or to re-prove a report that was already
+submitted:
 
 ```sql
-CALL karhutla_report_run_at('slik_bulanan', '42');                     -- versi snapshot
-CALL karhutla_report_run_at('slik_bulanan', '2026-09-30T23:59:59+07:00'); -- waktu (RFC 3339)
+CALL karhutla_report_run_at('slik_bulanan', '42');                     -- snapshot version
+CALL karhutla_report_run_at('slik_bulanan', '2026-09-30T23:59:59+07:00'); -- time (RFC 3339)
 ```
 
-Server menambahkan `AT (VERSION => n)` / `AT (TIMESTAMP => …)` ke setiap
-tabel di SQL report & assert **sebelum** otorisasi, sehingga masking/RLS
-pemanggil tetap berlaku (klausa AT dipindah ke scan di dalam subquery
-governance). Sidik tabel dihitung pada snapshot yang sama, jadi
-`snapshot_id` dan hasil identik dengan run asli bila datanya sama — DQ gate
-juga dinilai pada data snapshot itu. `as_of` dan `lake_snapshots` tercatat di
-manifest. Tabel non-DuckLake di report time travel → error; versi yang tidak
-ada / waktu sebelum snapshot pertama → `FAILED_PRECONDITION`. Topologi:
+The server adds `AT (VERSION => n)` / `AT (TIMESTAMP => …)` to every table in
+the report SQL & asserts **before** authorization, so the caller's
+masking/RLS still applies (the AT clause is moved to the scan inside the
+governance subquery). Table fingerprints are computed on the same snapshot,
+so `snapshot_id` and the result are identical to the original run when the
+data is the same — the DQ gate is also evaluated against that snapshot's
+data. `as_of` and `lake_snapshots` are recorded in the manifest. A
+non-DuckLake table in a time-travel report → error; a version that does not
+exist / a time before the first snapshot → `FAILED_PRECONDITION`. Topology:
 [DuckLake multi-writer](ducklake.md).
 
-Batas: hasil dibangun di memori server sebelum diunggah; time travel memakai
-kolom tabel saat ini untuk subquery masking (kolom yang ditambah/dihapus
-setelah snapshot → error, bukan data salah).
+Limits: the result is built in server memory before upload; time travel uses
+the table's current columns for the masking subquery (columns added/removed
+after the snapshot → an error, not wrong data).

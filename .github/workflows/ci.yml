@@ -22,7 +22,10 @@ jobs:
       - run: make test
       - run: make build
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest && make vuln
-      - run: python -m pip install -r docs/requirements.txt && make docs
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: make docs
 
   integration:
     runs-on: ubuntu-latest

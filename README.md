@@ -4,7 +4,7 @@ Server SQL analitik ringan: **Apache Arrow Flight SQL** di atas **DuckDB**, ditu
 
 > Status: pra-1.0, dalam pengembangan. Lihat [plan.md](plan.md) untuk fase yang sudah selesai.
 >
-> 📖 Dokumentasi: https://sivi-shahab.github.io/KarhutlaSQL/ · 🗺️ [Diagram arsitektur interaktif](https://sivi-shahab.github.io/KarhutlaSQL/diagram/arsitektur.html)
+> 📖 Dokumentasi (English, dengan tutorial): https://sivi-shahab.github.io/KarhutlaSQL/ · 🗺️ [Diagram arsitektur interaktif](https://sivi-shahab.github.io/KarhutlaSQL/diagram/architecture.html)
 
 ## Fitur
 
@@ -62,10 +62,10 @@ flowchart LR
     ops -. sync metadata .-> uc
 ```
 
-**[▶ Buka diagram interaktif](https://sivi-shahab.github.io/KarhutlaSQL/diagram/arsitektur.html)**
+**[▶ Buka diagram interaktif](https://sivi-shahab.github.io/KarhutlaSQL/diagram/architecture.html)**
 (klik komponen, badge **SRC** membuka kode sumbernya, telusuri jalur, ekspor PNG/SVG; daftar lengkap tool open source ada di kartu bawah diagram) — juga di halaman
-[Diagram arsitektur](https://sivi-shahab.github.io/KarhutlaSQL/architecture/) situs
-dokumentasi. Sumber diagram: [`docs/diagram/arsitektur.architecture.json`](docs/diagram/arsitektur.architecture.json).
+[Diagram arsitektur](https://sivi-shahab.github.io/KarhutlaSQL/architecture) situs
+dokumentasi. Sumber diagram: [`docs/public/diagram/architecture.json`](docs/public/diagram/architecture.json).
 
 ## Quick start
 

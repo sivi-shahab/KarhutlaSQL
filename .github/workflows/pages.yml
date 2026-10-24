@@ -1,4 +1,4 @@
-# Situs dokumentasi (mkdocs) + diagram arsitektur interaktif di GitHub Pages.
+# Situs dokumentasi (VitePress) + diagram arsitektur interaktif di GitHub Pages.
 # Aktifkan sekali: Settings → Pages → Source: GitHub Actions.
 name: pages
 
@@ -24,12 +24,14 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
-      - run: python -m pip install -r docs/requirements.txt && make docs
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: make docs
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: docs/.vitepress/dist
       - id: deploy
         uses: actions/deploy-pages@v4

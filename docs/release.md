@@ -1,20 +1,20 @@
-# Prosedur rilis
+# Release procedure
 
-Rilis dibuat dari `main` yang hijau. Tidak ada langkah yang mendorong ke luar
-secara otomatis: tag, unggah artefak, dan push image dilakukan manual oleh
-pemilik rilis.
+Releases are cut from a green `main`. No step pushes anything outward
+automatically: tagging, uploading artifacts, and pushing images are done
+manually by the release owner.
 
-## 1. Verifikasi
+## 1. Verify
 
 ```bash
-make lint test             # golangci-lint (termasuk gosec) + unit (-race)
+make lint test             # golangci-lint (including gosec) + unit tests (-race)
 make test-integration      # docker: Keycloak, MinIO, Unity Catalog
-make vuln                  # govulncheck: harus "No vulnerabilities found"
-make docs                  # mkdocs --strict
-go test ./internal/config -run TestConfigReference   # docs/config.md tidak basi
+make vuln                  # govulncheck: must report "No vulnerabilities found"
+npm --prefix docs ci && make docs   # VitePress site; the build fails on dead links
+go test ./internal/config -run TestConfigReference   # docs/config.md is not stale
 ```
 
-Fuzz (opsional per rilis, wajib bila parser/authz berubah):
+Fuzzing (optional per release, mandatory when the parser/authz changes):
 
 ```bash
 go test ./internal/sqlrewrite -run XXX -fuzz FuzzWriteTargets -fuzztime 5m
@@ -25,38 +25,38 @@ go test -tags duckdb_arrow ./internal/flightsql -run XXX -fuzz FuzzWriteIsolatio
 ## 2. Tag
 
 ```bash
-# CHANGELOG: pindahkan [Unreleased] → [1.0.0] - YYYY-MM-DD
+# CHANGELOG: move [Unreleased] → [1.0.0] - YYYY-MM-DD
 git tag -a v1.0.0 -m "KarhutlaSQL 1.0.0"
 ```
 
-`make` memakai tag `v*` terdekat sebagai versi (`--version`).
+`make` uses the nearest `v*` tag as the version (`--version`).
 
-## 3. Artefak
+## 3. Artifacts
 
-Binary + arsip + checksum + SBOM per arsip (server butuh CGO → image
-cross-compiler):
+Binaries + archives + checksums + an SBOM per archive (the server needs CGO →
+cross-compiler image):
 
 ```bash
 docker run --rm -v $PWD:/src -w /src ghcr.io/goreleaser/goreleaser-cross:v1.27.3 \
-  release --clean -f goreleaser.yaml      # hasil di dist/
+  release --clean -f goreleaser.yaml      # output in dist/
 ```
 
-Image dan SBOM-nya:
+The image and its SBOM:
 
 ```bash
-make docker IMAGE=<registry-internal>/karhutlasql:1.0.0
-make sbom IMAGE=<registry-internal>/karhutlasql:1.0.0    # dist/*.sbom.cdx.json
-docker push <registry-internal>/karhutlasql:1.0.0
+make docker IMAGE=<internal-registry>/karhutlasql:1.0.0
+make sbom IMAGE=<internal-registry>/karhutlasql:1.0.0    # dist/*.sbom.cdx.json
+docker push <internal-registry>/karhutlasql:1.0.0
 ```
 
-Lampirkan `dist/` (arsip, `checksums.txt`, `*.sbom.cdx.json`) ke rilis
-internal.
+Attach `dist/` (archives, `checksums.txt`, `*.sbom.cdx.json`) to the internal
+release.
 
-## 4. Benchmark (rilis mayor/minor)
+## 4. Benchmark (major/minor releases)
 
 ```bash
 go run -tags duckdb_arrow ./tests/testdata /data/tpch_sf10.duckdb 10
 python tests/bench/tpch_bench.py --db /data/tpch_sf10.duckdb --duckdb ./duckdb --server bin/karhutlasql-server
 ```
 
-Perbarui tabel di README bila berubah berarti.
+Update the table in the README if the numbers change meaningfully.

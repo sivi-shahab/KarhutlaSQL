@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="KarhutlaSQL logo: burning forest">
+  <defs>
+    <linearGradient id="fire" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#e03131"/>
+      <stop offset="0.55" stop-color="#f76707"/>
+      <stop offset="1" stop-color="#ffd43b"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ffa94d"/>
+      <stop offset="1" stop-color="#fff3bf"/>
+    </linearGradient>
+  </defs>
+  <!-- ground -->
+  <path d="M8 112 Q64 100 120 112 L120 120 L8 120 Z" fill="#5c3d2e"/>
+  <!-- back pines -->
+  <path d="M22 108 L34 70 L28 72 L38 46 L32 48 L42 26 L52 48 L46 46 L56 72 L50 70 L62 108 Z" fill="#2b8a3e"/>
+  <path d="M74 108 L84 78 L79 80 L88 58 L83 60 L92 40 L101 60 L96 58 L105 80 L100 78 L110 108 Z" fill="#2f9e44"/>
+  <!-- trunks -->
+  <rect x="39" y="104" width="6" height="10" fill="#5c3d2e"/>
+  <rect x="89" y="104" width="6" height="10" fill="#5c3d2e"/>
+  <!-- flame -->
+  <path d="M64 114 C40 114 38 90 50 76 C52 86 58 88 60 84 C56 68 64 52 76 42 C74 56 86 64 88 80 C90 74 90 70 88 64 C98 74 100 90 94 100 C90 108 80 114 64 114 Z" fill="url(#fire)"/>
+  <path d="M66 112 C54 112 52 100 58 92 C60 98 64 98 66 94 C64 86 68 78 74 74 C74 82 82 88 82 98 C82 106 76 112 66 112 Z" fill="url(#core)"/>
+</svg>

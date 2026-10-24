@@ -78,7 +78,9 @@ Diunduh dari `extensions.duckdb.org` saat `make docker-lake` (bukan Go module, t
 | pyarrow | Apache-2.0 | Integration test |
 | flight-sql-jdbc-driver (Java, 19.0.0) | Apache-2.0 | Smoke test JDBC (`tests/jdbc/`, tidak di-vendor) |
 | pytest | MIT | Integration test |
-| Archify (skill/CLI, tidak di-vendor; HTML hasil render di `docs/diagram/`) | MIT | Diagram arsitektur interaktif |
+| vitepress 1.6.4 (+ dependensinya: vue, vite, shiki, minisearch, dll.; devDependency `docs/package.json`, tidak di-link ke binary) | MIT (dependensi: MIT/ISC/BSD; ikon `@iconify-json/simple-icons` CC0-1.0) | Situs dokumentasi |
+| actions/setup-node | MIT | Node untuk build dokumentasi di CI |
+| Archify (skill/CLI, tidak di-vendor; HTML hasil render di `docs/public/diagram/`) | MIT | Diagram arsitektur interaktif |
 | actions/upload-pages-artifact, actions/deploy-pages | MIT | Terbitkan situs docs ke GitHub Pages |
 | testcontainers-go | MIT | Keycloak dev di test |
 | Keycloak (image) | Apache-2.0 | IdP dev |
@@ -87,7 +89,6 @@ Diunduh dari `extensions.duckdb.org` saat `make docker-lake` (bukan Go module, t
 | OpenSSL CLI | Apache-2.0 | Membuat kunci Ed25519 report di integration test |
 | govulncheck (`golang.org/x/vuln`) | BSD-3-Clause | `make vuln` — kerentanan yang terjangkau dari kode |
 | syft | Apache-2.0 | `make sbom` / goreleaser `sboms` — SBOM CycloneDX |
-| MkDocs | BSD-2-Clause | `make docs` — situs dokumentasi |
 | DuckDB CLI 1.5.6 | MIT | Pembanding benchmark TPC-H (`tests/bench/`) |
 
 ## Layanan eksternal (tidak di-link ke binary)

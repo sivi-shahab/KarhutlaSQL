@@ -39,9 +39,10 @@ sbom: build
 	@if docker image inspect $(IMAGE) >/dev/null 2>&1; then \
 		$(SYFT) scan docker:$(IMAGE) -o cyclonedx-json=dist/karhutlasql-image.sbom.cdx.json; fi
 
-MKDOCS ?= mkdocs
+# Situs dokumentasi VitePress → docs/.vitepress/dist (gagal pada dead link).
 docs:
-	$(MKDOCS) build --strict -d site
+	npm --prefix docs ci --no-audit --no-fund
+	npm --prefix docs run build
 
 DEVTLS := .dev/tls
 

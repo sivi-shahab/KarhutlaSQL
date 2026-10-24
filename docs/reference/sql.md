@@ -38,6 +38,15 @@ Access history needs an archive (`--archive-s3-*` or `--archive-dir`).
 See [Monitoring](/monitoring), [Reports](/reports), [Data quality](/data-quality),
 [auto-classification](/policy#auto-classification-finding-untagged-pii).
 
+### Scheduled jobs
+
+| Function | Returns | Who |
+|---|---|---|
+| `karhutla_jobs()` | `name, kind, target, schedule, next_run, running, last_start, last_end, last_status, last_error, last_rows` | admin |
+| `karhutla_run_job(name)` | `name, started` — runs the job now (asynchronously) | admin |
+
+See [Scheduled jobs](/jobs).
+
 ### AI & semantic layer
 
 | Function | Returns | Who |
@@ -93,6 +102,7 @@ print(json.loads(next(res).body.to_pybytes()))
 | `reload_policy` | `{"document": "policy" \| "classification"}` → pending change, counts as first approval | admin |
 | `approve_policy` | `{"document", "hash"}` → second approval activates it | admin (a different admin) |
 | `backup` | — → backup manifest | admin |
+| `refresh_table` | `{"table", "sql"}` → `{"table", "rows"}` — atomic `CREATE OR REPLACE TABLE … AS SELECT` | write on the table + read on the sources |
 | `dq_snapshot` | `{"table"}` → `{"table", "snapshot_id"}` | `dq_runner` role + read on the table |
 | `dq_publish` | `{"table", "snapshot_id", "result": <GX Validation Result>}` | `dq_runner` role + read on the table |
 | `audit.pii_access` | `{"subject_id", "from", "to"}` → statements that may have read the subject's data | `dpo` role or admin |

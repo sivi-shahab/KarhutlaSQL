@@ -50,6 +50,12 @@ SQL, assert results, `dq_validation_ids` (GX validation IDs used by the
 gate), result files (sha256, rows, bytes), `key_id` (first 16 hex of the
 public key's sha256).
 
+## Scheduling
+
+Run reports on a schedule (for example monthly) with a [scheduled job](/jobs)
+of kind `report`; the run is signed and archived the same way, as identity
+`job:<name>`.
+
 ## Verification
 
 ```bash

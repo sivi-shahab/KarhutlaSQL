@@ -169,8 +169,9 @@ func start(t testing.TB, o envOpts) *testEnv {
 			TLS: o.tls, Unary: []grpc.UnaryServerInterceptor{ai.Unary(), si.Unary()}, Stream: []grpc.StreamServerInterceptor{ai.Stream(), si.Stream()},
 			Health: func(context.Context) error { return nil }, Drain: 5 * time.Second,
 			Actions: map[string]func(context.Context, []byte) ([]byte, error){
-				ActionDQSnapshot: func(ctx context.Context, b []byte) ([]byte, error) { return srv.DQAction(ctx, ActionDQSnapshot, b) },
-				ActionDQPublish:  func(ctx context.Context, b []byte) ([]byte, error) { return srv.DQAction(ctx, ActionDQPublish, b) },
+				ActionDQSnapshot:   func(ctx context.Context, b []byte) ([]byte, error) { return srv.DQAction(ctx, ActionDQSnapshot, b) },
+				ActionDQPublish:    func(ctx context.Context, b []byte) ([]byte, error) { return srv.DQAction(ctx, ActionDQPublish, b) },
+				ActionRefreshTable: srv.RefreshAction,
 			},
 		}, log)
 	}()

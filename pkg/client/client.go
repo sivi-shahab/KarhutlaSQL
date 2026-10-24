@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -148,6 +149,46 @@ func (c *Client) Query(ctx context.Context, sql string) (*flight.Reader, error) 
 		return nil, fmt.Errorf("client.Query: %w", err)
 	}
 	return c.fetch(ctx, info)
+}
+
+// Action menjalankan Flight DoAction typ dengan body (JSON) dan mengembalikan
+// body hasil pertama (nil bila tidak ada).
+func (c *Client) Action(ctx context.Context, typ string, body []byte) ([]byte, error) {
+	ctx, err := c.ctx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := c.cl.Client.DoAction(ctx, &flight.Action{Type: typ, Body: body})
+	if err != nil {
+		return nil, fmt.Errorf("client.Action: %w", err)
+	}
+	var out []byte
+	for {
+		res, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return out, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("client.Action: %w", err)
+		}
+		if out == nil {
+			out = res.GetBody()
+		}
+	}
+}
+
+// Exec mengeksekusi statement tanpa hasil baris (DDL/DML) dan mengembalikan
+// jumlah baris terdampak.
+func (c *Client) Exec(ctx context.Context, sql string) (int64, error) {
+	ctx, err := c.ctx(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n, err := c.cl.ExecuteUpdate(ctx, sql)
+	if err != nil {
+		return 0, fmt.Errorf("client.Exec: %w", err)
+	}
+	return n, nil
 }
 
 // Tables mengembalikan daftar tabel (Flight SQL GetTables).

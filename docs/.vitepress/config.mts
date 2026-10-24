@@ -29,6 +29,7 @@ const guides = [
   { text: 'Policy & governance', link: '/policy' },
   { text: 'Monitoring', link: '/monitoring' },
   { text: 'Signed report runs', link: '/reports' },
+  { text: 'Scheduled jobs & materialized tables', link: '/jobs' },
   { text: 'Data quality', link: '/data-quality' },
   { text: 'Unity Catalog', link: '/catalog' },
   { text: 'MCP server (AI agents)', link: '/mcp' },

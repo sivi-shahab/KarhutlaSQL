@@ -40,6 +40,8 @@ const (
 	Backup          = "backup"
 	// Usulan klasifikasi PII (backlog auto-classification).
 	ClassificationScan = "classification_scan"
+	// Job terjadwal (fase 9b): Object = nama job, Detail = jenis.
+	JobRun = "job_run"
 )
 
 // Event satu baris audit (JSON). Field kosong dihilangkan.

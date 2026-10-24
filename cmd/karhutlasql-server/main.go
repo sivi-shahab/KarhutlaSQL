@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/otel"
@@ -58,6 +59,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/flightsql"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
+	"github.com/bankmega/karhutlasql/internal/jobs"
 	"github.com/bankmega/karhutlasql/internal/mcp"
 	"github.com/bankmega/karhutlasql/internal/metrics"
 	"github.com/bankmega/karhutlasql/internal/migrate"
@@ -215,6 +217,18 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	if err != nil {
 		return err
 	}
+	jobList, err := jobs.Load(cfg.JobsFile)
+	if err != nil {
+		return err
+	}
+	var jobRunner *jobs.Runner
+	var jobClient *client.Client // diisi sebelum jobRunner.Run
+	if len(jobList) > 0 {
+		if cfg.PolicyFile == "" {
+			return errors.New("main.serve: --jobs-file requires --policy-file (job privileges come from policy subjects)")
+		}
+		jobRunner = jobs.NewRunner(jobList, jobExec(authn, &jobClient, auditLog))
+	}
 	reports, signer, err := newReports(ctx, cfg, log)
 	if err != nil {
 		return err
@@ -229,7 +243,8 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		Setup: func(ctx context.Context, conn *sql.Conn) error {
 			return sqlext.Register(ctx, conn, sqlext.Deps{Quota: quotas, Verified: vset, Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, AccessLog: access, MaskKey: maskKey, DQ: dqStore,
 				RunReport:    func(ctx context.Context, name, asOf string) ([]any, error) { return srv.ReportRow(ctx, name, asOf) },
-				ClassifyScan: func(ctx context.Context) ([][]any, error) { return srv.ClassifyScan(ctx) }})
+				ClassifyScan: func(ctx context.Context) ([][]any, error) { return srv.ClassifyScan(ctx) },
+				Jobs:         jobRunner})
 		}})
 	if err != nil {
 		return err
@@ -357,6 +372,17 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		n += 2 // Flight SQL in-process + HTTP
 		go func() { errc <- admin.Serve(ctx, mcpLis, h, log); cancel() }()
 	}
+	if jobRunner != nil {
+		if jobClient, err = inprocClient(ctx, srv, gopts, log, errc, nil); err != nil {
+			cancel()
+			return errors.Join(fmt.Errorf("main.serve: jobs: %w", err), <-errc)
+		}
+		n++
+		log.Info("scheduled jobs", "count", len(jobList))
+		jobsDone := make(chan struct{})
+		go func() { defer close(jobsDone); jobRunner.Run(ctx) }()
+		defer func() { cancel(); <-jobsDone }() // sebelum engine ditutup
+	}
 	go sessions.Run(ctx, time.Minute)
 	if revSync != nil {
 		go revSync.Run(ctx, cfg.RevocationSyncInterval, func(err error) { log.Warn("revocation sync failed; retrying", "err", err) })
@@ -412,16 +438,10 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 // sama dengan klien biasa. Goroutine server in-process melapor ke errc.
 func newMCP(ctx context.Context, cfg config.Config, srv *flightsql.Server, gopts server.Options, ai *interceptor.Auth,
 	sessions *session.Registry, log *slog.Logger, errc chan<- error) (http.Handler, error) {
-	inproc := bufconn.Listen(1 << 20)
-	gopts.TLS = nil // in-process saja
-	go func() { errc <- server.Serve(ctx, inproc, srv, gopts, log) }()
-	cl, err := client.Dial(ctx, client.Config{Addr: "passthrough:///karhutlasql-inproc", NoLogin: true,
-		Metadata:    map[string]string{auth.ChannelHeader: auth.ChannelMCP},
-		DialOptions: []grpc.DialOption{grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return inproc.DialContext(ctx) })}})
+	cl, err := inprocClient(ctx, srv, gopts, log, errc, map[string]string{auth.ChannelHeader: auth.ChannelMCP})
 	if err != nil {
 		return nil, fmt.Errorf("main.newMCP: %w", err)
 	}
-	go func() { <-ctx.Done(); _ = cl.Close() }()
 	verify := func(ctx context.Context, token string) (string, time.Time, error) {
 		id, err := ai.Verify(ctx, token)
 		if err == nil && sessions.Revoked(id.TokenID) {
@@ -439,6 +459,65 @@ func newMCP(ctx context.Context, cfg config.Config, srv *flightsql.Server, gopts
 	}
 	log.Info("mcp enabled", "port", cfg.MCPPort, "resource_url", cfg.MCPResourceURL)
 	return h, nil
+}
+
+// inprocClient klien Flight SQL ke server ini lewat listener gRPC
+// in-process (bufconn, tanpa jaringan, tanpa TLS) dengan interceptor yang
+// sama; setiap panggilan wajib membawa token (client.WithBearer). Goroutine
+// server in-process melapor ke errc (pemanggil menambah hitungan errc).
+func inprocClient(ctx context.Context, srv *flightsql.Server, gopts server.Options, log *slog.Logger, errc chan<- error,
+	md map[string]string) (*client.Client, error) {
+	inproc := bufconn.Listen(1 << 20)
+	gopts.TLS = nil
+	go func() { errc <- server.Serve(ctx, inproc, srv, gopts, log) }()
+	cl, err := client.Dial(ctx, client.Config{Addr: "passthrough:///karhutlasql-inproc", NoLogin: true, Metadata: md,
+		DialOptions: []grpc.DialOption{grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return inproc.DialContext(ctx) })}})
+	if err != nil {
+		return nil, err
+	}
+	go func() { <-ctx.Done(); _ = cl.Close() }()
+	return cl, nil
+}
+
+// jobExec menjalankan statement job sebagai identitas "job:<name>" (token
+// lokal internal) lewat klien in-process: izin dari subjects policy,
+// governance, antrean, kuota, audit & access history sama dengan klien
+// biasa. Setiap run dicatat di audit job_run.
+func jobExec(authn *local.Authenticator, cl **client.Client, auditLog *audit.Logger) jobs.Exec {
+	return func(ctx context.Context, j jobs.Job) (int64, error) {
+		tok, id, err := authn.IssueJob(j.Name)
+		if err != nil {
+			return 0, err
+		}
+		t0 := time.Now()
+		ctx = client.WithBearer(ctx, tok)
+		var rows int64
+		if j.Refresh != nil {
+			body, _ := json.Marshal(map[string]string{"table": j.Refresh.Table, "sql": j.Refresh.SQL}) // selalu bisa
+			var res []byte
+			if res, err = (*cl).Action(ctx, flightsql.ActionRefreshTable, body); err == nil {
+				var r struct{ Rows int64 }
+				err = json.Unmarshal(res, &r)
+				rows = r.Rows
+			}
+		} else {
+			var rdr *flight.Reader
+			if rdr, err = (*cl).Query(ctx, "CALL karhutla_report_run('"+j.Report+"')"); err == nil { // nama tervalidasi [a-z0-9_]
+				for rdr.Next() {
+					rows += rdr.RecordBatch().NumRows()
+				}
+				err = rdr.Err()
+				rdr.Release()
+			}
+		}
+		ev := audit.Event{Type: audit.JobRun, User: id.Subject, Source: id.Source, Object: j.Name, Detail: j.Kind(),
+			Rows: rows, DurationMS: time.Since(t0).Milliseconds(), Status: "OK"}
+		if err != nil {
+			ev.Status, ev.Error = "FAILED", err.Error()
+		}
+		auditLog.Emit(ctx, ev)
+		return rows, err
+	}
 }
 
 // newBackup fungsi backup (DoAction & jadwal): manifest JSON; setiap run
@@ -690,6 +769,7 @@ func actions(o admin.Options, srv *flightsql.Server, backup func(context.Context
 		out[typ] = func(ctx context.Context, body []byte) ([]byte, error) { return srv.DQAction(ctx, typ, body) }
 	}
 	out[flightsql.ActionPIIAccess] = srv.PIIAccessAction
+	out[flightsql.ActionRefreshTable] = srv.RefreshAction
 	out[ActionBackup] = func(ctx context.Context, _ []byte) ([]byte, error) {
 		id, _ := auth.FromContext(ctx)
 		if !id.HasRole(auth.RoleAdmin) {

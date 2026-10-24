@@ -35,6 +35,7 @@ the secret, `*-file` flags point to a file (private keys must be 0600).
 | `--health-check-query` | `KARHUTLASQL_HEALTH_CHECK_QUERY` | `SELECT 1` | query for gRPC health and /healthz |
 | `--host` | `KARHUTLASQL_HOST` | `0.0.0.0` | listen address |
 | `--init-sql-file` | `KARHUTLASQL_INIT_SQL_FILE` | — | SQL file executed at startup (INSTALL/LOAD/ATTACH) |
+| `--jobs-file` | `KARHUTLASQL_JOBS_FILE` | — | YAML of scheduled jobs (cron): signed report runs and materialized table refreshes, each run as identity job:&lt;name&gt; granted via policy subjects; needs --policy-file |
 | `--jwt-private-key-file` | `KARHUTLASQL_JWT_PRIVATE_KEY_FILE` | — | RSA PEM key (0600) for RS256; replaces HS256 |
 | `--jwt-secret-env` | `KARHUTLASQL_JWT_SECRET_ENV` | `KARHUTLASQL_JWT_SECRET` | name of the env var holding the HS256 secret (≥ 32 bytes); empty = random per process |
 | `--jwt-ttl` | `KARHUTLASQL_JWT_TTL` | `8h0m0s` | token lifetime (max 24h) |

@@ -88,6 +88,8 @@ type Config struct {
 	MCPResourceURL      string
 	MCPMaxRows          int
 	VerifiedQueriesFile string
+	// Job terjadwal (backlog fase 9b); kosong = tanpa job.
+	JobsFile string
 	// OpenTelemetry tracing (OTLP gRPC); endpoint kosong = mati.
 	OTelEndpoint    string
 	OTelInsecure    bool
@@ -181,6 +183,7 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.String("mcp-resource-url", "", "public URL of the MCP endpoint (e.g. https://kq.bank.local:8443/mcp) for RFC 9728 OAuth metadata; empty = no metadata")
 	fs.Int("mcp-max-rows", 500, "row limit per MCP tool result (on top of the ai_sandbox profile limits)")
 	fs.String("verified-queries-file", "", "YAML of verified queries + semantic model (karhutla_verified_queries(), MCP resources)")
+	fs.String("jobs-file", "", "YAML of scheduled jobs (cron): signed report runs and materialized table refreshes, each run as identity job:<name> granted via policy subjects; needs --policy-file")
 	fs.String("otel-endpoint", "", "OTLP gRPC collector (host:port) for OpenTelemetry tracing; auth headers via env OTEL_EXPORTER_OTLP_HEADERS; empty = disabled")
 	fs.Bool("otel-insecure", false, "OTLP without TLS (dev)")
 	fs.Float64("otel-sample-ratio", 1, "sampling ratio for new traces (0..1); traces from clients follow the parent decision")
@@ -278,6 +281,7 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		MCPResourceURL:           v.GetString("mcp-resource-url"),
 		MCPMaxRows:               v.GetInt("mcp-max-rows"),
 		VerifiedQueriesFile:      v.GetString("verified-queries-file"),
+		JobsFile:                 v.GetString("jobs-file"),
 		OTelEndpoint:             v.GetString("otel-endpoint"),
 		OTelInsecure:             v.GetBool("otel-insecure"),
 		OTelSampleRatio:          v.GetFloat64("otel-sample-ratio"),

@@ -64,6 +64,9 @@ func New(cfg Config) (*Authenticator, error) {
 	if cfg.Username == "" || cfg.Password == "" {
 		return nil, errors.New("local.New: username and password are required")
 	}
+	if strings.HasPrefix(cfg.Username, JobPrefix) {
+		return nil, fmt.Errorf("local.New: username must not start with %q (reserved for scheduled jobs)", JobPrefix)
+	}
 	if cfg.TTL <= 0 || cfg.TTL > MaxTTL {
 		return nil, fmt.Errorf("local.New: ttl %s must be in (0, %s]", cfg.TTL, MaxTTL)
 	}
@@ -117,8 +120,26 @@ func (a *Authenticator) Login(username, password string) (string, auth.Identity,
 	if err := bcrypt.CompareHashAndPassword(hash, []byte(password)); err != nil || !userOK {
 		return "", auth.Identity{}, ErrInvalidCredentials
 	}
+	return a.issue(username)
+}
+
+// JobPrefix awalan subject identitas job terjadwal (internal/jobs); user lokal
+// tidak boleh memakainya.
+const JobPrefix = "job:"
+
+// IssueJob menerbitkan token lokal untuk identitas job terjadwal
+// "job:<name>" tanpa password — hanya dipanggil runner job di dalam proses
+// server; izinnya tetap dari subjects policy ({ user: "job:<name>" }).
+func (a *Authenticator) IssueJob(name string) (string, auth.Identity, error) {
+	if name == "" {
+		return "", auth.Identity{}, errors.New("local.IssueJob: empty job name")
+	}
+	return a.issue(JobPrefix + name)
+}
+
+func (a *Authenticator) issue(subject string) (string, auth.Identity, error) {
 	now := a.now()
-	id := auth.Identity{Subject: username, Source: auth.SourceLocal, TokenID: uuid.NewString(), ExpiresAt: now.Add(a.ttl)}
+	id := auth.Identity{Subject: subject, Source: auth.SourceLocal, TokenID: uuid.NewString(), ExpiresAt: now.Add(a.ttl)}
 	tok := jwt.NewWithClaims(a.method, jwt.RegisteredClaims{
 		Issuer:    Issuer,
 		Subject:   id.Subject,
@@ -131,7 +152,7 @@ func (a *Authenticator) Login(username, password string) (string, auth.Identity,
 	tok.Header["kid"] = a.kid
 	s, err := tok.SignedString(a.signKey)
 	if err != nil {
-		return "", auth.Identity{}, fmt.Errorf("local.Login: %w", err)
+		return "", auth.Identity{}, fmt.Errorf("local.issue: %w", err)
 	}
 	return s, id, nil
 }

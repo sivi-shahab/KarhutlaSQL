@@ -26,6 +26,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/dq"
+	"github.com/bankmega/karhutlasql/internal/jobs"
 	"github.com/bankmega/karhutlasql/internal/quota"
 	"github.com/bankmega/karhutlasql/internal/session"
 	"github.com/bankmega/karhutlasql/internal/verified"
@@ -60,6 +61,9 @@ type Deps struct {
 	// ClassifyScan usulan tag PII per kolom (admin), baris classifyCols;
 	// nil = fungsi menolak.
 	ClassifyScan func(ctx context.Context) ([][]any, error)
+	// Jobs runner job terjadwal untuk karhutla_jobs()/karhutla_run_job();
+	// nil = tanpa job.
+	Jobs *jobs.Runner
 	// MaskKey kunci HMAC-SHA256 untuk mask hash_hmac (G-03); kosong = fungsi
 	// mask menolak semua pemanggilan.
 	MaskKey []byte
@@ -86,6 +90,8 @@ func Register(_ context.Context, conn *sql.Conn, d Deps) error {
 		"karhutla_verified_queries": table(verifiedCols, nil, nil, d.verifiedQueries),
 		"karhutla_semantic_model":   table([]col{{"semantic_model", duckdb.TYPE_VARCHAR}}, nil, nil, d.semanticModel),
 		"karhutla_classify_scan":    table(classifyCols, nil, nil, d.classifyScan),
+		"karhutla_jobs":             table(jobCols, nil, nil, d.jobs),
+		"karhutla_run_job":          table(runJobCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, nil, d.runJob),
 		// Nama terpisah: duckdb-go gagal bila named argument tidak diberikan dan
 		// DuckDB mengabaikan registrasi overload kedua.
 		"karhutla_report_run":           table(reportCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, nil, d.report),
@@ -169,7 +175,12 @@ var (
 	classifyCols = []col{{"table_name", duckdb.TYPE_VARCHAR}, {"column_name", duckdb.TYPE_VARCHAR}, {"data_type", duckdb.TYPE_VARCHAR},
 		{"suggested_tag", duckdb.TYPE_VARCHAR}, {"match_ratio", duckdb.TYPE_DOUBLE}, {"sampled", duckdb.TYPE_BIGINT},
 		{"reason", duckdb.TYPE_VARCHAR}, {"current_tag", duckdb.TYPE_VARCHAR}}
-	killCols = []col{{"session_id", duckdb.TYPE_VARCHAR}, {"killed", duckdb.TYPE_BOOLEAN}}
+	jobCols = []col{{"name", duckdb.TYPE_VARCHAR}, {"kind", duckdb.TYPE_VARCHAR}, {"target", duckdb.TYPE_VARCHAR},
+		{"schedule", duckdb.TYPE_VARCHAR}, {"next_run", duckdb.TYPE_TIMESTAMP_TZ}, {"running", duckdb.TYPE_BOOLEAN},
+		{"last_start", duckdb.TYPE_TIMESTAMP_TZ}, {"last_end", duckdb.TYPE_TIMESTAMP_TZ}, {"last_status", duckdb.TYPE_VARCHAR},
+		{"last_error", duckdb.TYPE_VARCHAR}, {"last_rows", duckdb.TYPE_BIGINT}}
+	runJobCols = []col{{"name", duckdb.TYPE_VARCHAR}, {"started", duckdb.TYPE_BOOLEAN}}
+	killCols   = []col{{"session_id", duckdb.TYPE_VARCHAR}, {"killed", duckdb.TYPE_BOOLEAN}}
 	// verifiedCols karhutla_verified_queries() (Fase 8c).
 	verifiedCols = []col{{"name", duckdb.TYPE_VARCHAR}, {"question", duckdb.TYPE_VARCHAR}, {"sql", duckdb.TYPE_VARCHAR},
 		{"verified_by", duckdb.TYPE_VARCHAR}, {"verified_at", duckdb.TYPE_TIMESTAMP_TZ}}
@@ -400,6 +411,59 @@ func (d Deps) classifyScan(ctx context.Context, _ []any, _ map[string]any) ([][]
 		return nil, errors.New("karhutla_classify_scan: not configured")
 	}
 	return d.ClassifyScan(ctx)
+}
+
+// jobs: karhutla_jobs() (admin) — keadaan job terjadwal.
+func (d Deps) jobs(ctx context.Context, _ []any, _ map[string]any) ([][]any, error) {
+	if err := requireAdmin(ctx, "karhutla_jobs"); err != nil {
+		return nil, err
+	}
+	if d.Jobs == nil {
+		return nil, nil
+	}
+	var out [][]any
+	for _, s := range d.Jobs.Snapshot() {
+		target := s.Job.Report
+		if s.Job.Refresh != nil {
+			target = s.Job.Refresh.Table
+		}
+		var status, errText any
+		if s.LastStatus != "" {
+			status = s.LastStatus
+		}
+		if s.LastError != "" {
+			errText = s.LastError
+		}
+		out = append(out, []any{s.Job.Name, s.Job.Kind(), target, s.Job.Schedule, ts(s.Next), s.Running,
+			ts(s.LastStart), ts(s.LastEnd), status, errText, s.LastRows})
+	}
+	return out, nil
+}
+
+// runJob: karhutla_run_job(name) (admin) — jalankan job sekarang (asinkron).
+func (d Deps) runJob(ctx context.Context, args []any, _ map[string]any) ([][]any, error) {
+	if err := requireAdmin(ctx, "karhutla_run_job"); err != nil {
+		return nil, err
+	}
+	if d.Jobs == nil {
+		return nil, fmt.Errorf("%w: no jobs configured (--jobs-file)", ErrFailedPrecondition)
+	}
+	name, _ := args[0].(string)
+	if err := d.Jobs.Trigger(name); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrFailedPrecondition, err)
+	}
+	return [][]any{{name, true}}, nil
+}
+
+func requireAdmin(ctx context.Context, fn string) error {
+	id, err := identity(ctx)
+	if err != nil {
+		return err
+	}
+	if !id.HasRole(auth.RoleAdmin) {
+		return fmt.Errorf("%w: %s requires role %s", ErrPermissionDenied, fn, auth.RoleAdmin)
+	}
+	return nil
 }
 
 func (d Deps) kill(ctx context.Context, args []any, _ map[string]any) ([][]any, error) {

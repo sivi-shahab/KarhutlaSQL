@@ -3,6 +3,8 @@
 Server SQL analitik ringan: **Apache Arrow Flight SQL** di atas **DuckDB**, ditulis dalam Go, satu binary statis. Dirancang untuk lingkungan on-prem/air-gapped dengan kebutuhan audit: SSO/OIDC, otorisasi per-catalog, session control, Prometheus metrics, audit log.
 
 > Status: pra-1.0, dalam pengembangan. Lihat [plan.md](plan.md) untuk fase yang sudah selesai.
+>
+> 📖 Dokumentasi: https://sivi-shahab.github.io/KarhutlaSQL/ · 🗺️ [Diagram arsitektur interaktif](https://sivi-shahab.github.io/KarhutlaSQL/diagram/arsitektur.html)
 
 ## Fitur
 
@@ -56,10 +58,10 @@ flowchart LR
     ops -. tanda tangan .-> vault
 ```
 
-Versi interaktif (klik komponen, telusuri jalur, ekspor PNG/SVG):
-[`docs/diagram/arsitektur.html`](docs/diagram/arsitektur.html), juga di
-halaman "Diagram arsitektur" situs dokumentasi (GitHub Pages, workflow
-`pages`). Sumber diagram: [`docs/diagram/arsitektur.architecture.json`](docs/diagram/arsitektur.architecture.json).
+**[▶ Buka diagram interaktif](https://sivi-shahab.github.io/KarhutlaSQL/diagram/arsitektur.html)**
+(klik komponen, telusuri jalur, ekspor PNG/SVG) — juga di halaman
+[Diagram arsitektur](https://sivi-shahab.github.io/KarhutlaSQL/architecture/) situs
+dokumentasi. Sumber diagram: [`docs/diagram/arsitektur.architecture.json`](docs/diagram/arsitektur.architecture.json).
 
 ## Quick start
 

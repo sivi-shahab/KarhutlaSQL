@@ -62,6 +62,10 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | great_expectations (GX Core, Python) | Apache-2.0 | DQ runner contoh + integration test (Q-02) |
 | cgr.dev/chainguard/minio, cgr.dev/chainguard/minio-client (image) | AGPL-3.0 (proses terpisah, tidak di-link/didistribusikan) | S3 object-lock di integration test arsip (image resmi MinIO tidak lagi publik) |
 | OpenSSL CLI | Apache-2.0 | Membuat kunci Ed25519 report di integration test |
+| govulncheck (`golang.org/x/vuln`) | BSD-3-Clause | `make vuln` — kerentanan yang terjangkau dari kode |
+| syft | Apache-2.0 | `make sbom` / goreleaser `sboms` — SBOM CycloneDX |
+| MkDocs | BSD-2-Clause | `make docs` — situs dokumentasi |
+| DuckDB CLI 1.5.6 | MIT | Pembanding benchmark TPC-H (`tests/bench/`) |
 
 ## Layanan eksternal (tidak di-link ke binary)
 

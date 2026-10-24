@@ -10,3 +10,4 @@ tests/data/*.duckdb
 __pycache__/
 .pytest_cache/
 .dev/
+site/

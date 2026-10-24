@@ -1,12 +1,12 @@
 MODULE  := github.com/bankmega/karhutlasql
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X $(MODULE)/internal/version.Version=$(VERSION)
 # duckdb_arrow: Arrow interface duckdb-go (opt-in).
 TAGS    := duckdb_arrow
 PYTHON  ?= .venv/bin/python
 TPCH    := tests/data/tpch_sf0_01.duckdb
 
-.PHONY: build test test-integration testdata lint run-dev dev-certs docker
+.PHONY: build test test-integration testdata lint vuln sbom docs bench run-dev dev-certs docker
 
 build:
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
@@ -25,6 +25,23 @@ test-integration: build testdata
 
 lint:
 	golangci-lint run ./...
+
+# Kerentanan yang benar-benar terjangkau dari kode (gosec ada di lint).
+vuln:
+	govulncheck -tags $(TAGS) ./...
+
+# SBOM CycloneDX dari binary (modul Go yang benar-benar di-link) + image.
+SYFT ?= syft
+sbom: build
+	@mkdir -p dist
+	$(SYFT) scan file:bin/karhutlasql-server -o cyclonedx-json=dist/karhutlasql-server.sbom.cdx.json
+	$(SYFT) scan file:bin/karhutlasql-client -o cyclonedx-json=dist/karhutlasql-client.sbom.cdx.json
+	@if docker image inspect $(IMAGE) >/dev/null 2>&1; then \
+		$(SYFT) scan docker:$(IMAGE) -o cyclonedx-json=dist/karhutlasql-image.sbom.cdx.json; fi
+
+MKDOCS ?= mkdocs
+docs:
+	$(MKDOCS) build --strict -d site
 
 DEVTLS := .dev/tls
 

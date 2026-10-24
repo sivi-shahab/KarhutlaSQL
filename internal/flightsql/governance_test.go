@@ -292,6 +292,65 @@ func FuzzGovernance(f *testing.F) {
 	})
 }
 
+// writeBypass percobaan analyst (tulis hanya di sandbox) mengubah warehouse.
+var writeBypass = []string{
+	"INSERT INTO warehouse.main.nasabah SELECT * FROM warehouse.main.nasabah",
+	"INSERT INTO warehouse.nasabah SELECT * FROM warehouse.nasabah LIMIT 1",
+	`INSERT INTO "WAREHOUSE"."MAIN"."NASABAH" SELECT * FROM warehouse.nasabah LIMIT 1`,
+	"UPDATE warehouse.nasabah SET nama = 'x'",
+	"DELETE FROM warehouse.main.nasabah",
+	"TRUNCATE warehouse.nasabah",
+	"DROP TABLE warehouse.main.nasabah",
+	"ALTER TABLE warehouse.nasabah ADD COLUMN z INT",
+	"CREATE TABLE warehouse.main.z AS SELECT 1",
+	"CREATE VIEW warehouse.main.v AS SELECT 1",
+	"WITH x AS (SELECT 1) INSERT INTO warehouse.nasabah SELECT * FROM warehouse.nasabah LIMIT 1",
+	"INSERT INTO sandbox.main.s SELECT 'x'; DELETE FROM warehouse.nasabah",
+	"USE warehouse; DELETE FROM nasabah",
+	"USE warehouse",
+	"DELETE FROM nasabah",
+	"SET search_path = 'warehouse.main'",
+	"INSERT INTO warehouse.nasabah BY NAME SELECT * FROM warehouse.nasabah LIMIT 1",
+	"INSERT OR REPLACE INTO warehouse.nasabah SELECT * FROM warehouse.nasabah LIMIT 1",
+	"COPY warehouse.nasabah FROM '/dev/null'",
+	"DETACH warehouse",
+	"ATTACH ':memory:' AS warehouse2",
+	"CREATE MACRO m() AS 1",
+	"CALL dbgen(sf = 0.001, catalog = 'warehouse')",
+	"UPDATE sandbox.main.s SET x = (SELECT 1 FROM warehouse.nasabah LIMIT 1)",
+	"CHECKPOINT warehouse",
+	"PRAGMA truncate('warehouse.nasabah')",
+}
+
+// FuzzWriteIsolation: properti — statement apa pun dari analyst tidak pernah
+// mengubah isi, tabel, atau catalog warehouse (ditolak atau hanya menulis
+// sandbox). Penjaga extractor target tulis (sqlrewrite) + EXPLAIN.
+func FuzzWriteIsolation(f *testing.F) {
+	for _, q := range writeBypass {
+		f.Add(q)
+	}
+	g := startGov(f)
+	const state = `SELECT (SELECT count(*) || ':' || sum(hash(x)) FROM warehouse.main.nasabah x) || '|' ||
+		(SELECT string_agg(n, ',' ORDER BY n) FROM (SELECT database_name || '.' || schema_name || '.' || table_name AS n FROM duckdb_tables() WHERE database_name <> 'sandbox')) || '|' ||
+		(SELECT string_agg(database_name, ',' ORDER BY database_name) FROM duckdb_databases())`
+	before, err := g.rows("ops", state)
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Fuzz(func(t *testing.T, q string) {
+		ctx := bearer(g.tok["analyst"])
+		_, _ = g.cl.ExecuteUpdate(ctx, q)
+		_, _ = g.rows("analyst", q)
+		after, err := g.rows("ops", state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after[0] != before[0] {
+			t.Fatalf("WRITE BYPASS %q:\nbefore %s\nafter  %s", q, before[0], after[0])
+		}
+	})
+}
+
 // Acceptance #7 bagian kedua (G-05): access-history mencatat kolom & policy.
 func TestGovernance_AccessHistory(t *testing.T) {
 	g := startGov(t)

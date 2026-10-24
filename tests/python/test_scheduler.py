@@ -19,7 +19,7 @@ SLOW = "SELECT count(*) FROM range(100000000) WHERE hash(range) % 7 = 0"
 def limited(tmp_path_factory):
     db = tmp_path_factory.mktemp("db") / "tpch.duckdb"
     shutil.copy(TPCH, db)
-    yield from start_server(tmp_path_factory, db, ["--max-concurrent", "4", "--queue-size", "64", "--slow-query-threshold", "300ms"])
+    yield from start_server(tmp_path_factory, db, ["--max-concurrent", "4", "--queue-size", "64", "--slow-query-threshold", "300ms", "--query-profiling"])
 
 
 def gauge(server, name):

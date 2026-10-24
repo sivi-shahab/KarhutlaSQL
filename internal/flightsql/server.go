@@ -424,7 +424,7 @@ func (s *Server) query(ctx context.Context, sql string, params []any) (*arrow.Sc
 		end(0, 0, err)
 		return nil, nil, err
 	}
-	ar := &auditedReader{RecordReader: rdr, qctx: qctx, end: end, maxBytes: pl.limits.MaxBytes}
+	ar := &auditedReader{RecordReader: &batcher{RecordReader: rdr}, qctx: qctx, end: end, maxBytes: pl.limits.MaxBytes}
 	ch := make(chan flight.StreamChunk)
 	go flight.StreamChunksFromReader(ctx, ar, ch)
 	return rdr.Schema(), ch, nil
@@ -510,6 +510,87 @@ func (r *auditedReader) Release() {
 	err := r.Err()
 	r.RecordReader.Release()
 	r.once.Do(func() { r.end(r.rows, r.bytes, err) })
+}
+
+// batchRows target baris per batch Arrow yang dikirim (spec §6: 64k).
+const batchRows = 64 * 1024
+
+// batcher menggabungkan record kecil dari engine (DuckDB: 2048 baris per
+// vektor) menjadi batch ±batchRows baris: jauh lebih sedikit pesan gRPC dan
+// overhead per batch di klien, dengan satu salinan tambahan.
+type batcher struct {
+	array.RecordReader
+	cur arrow.RecordBatch
+	err error
+}
+
+func (b *batcher) Next() bool {
+	if b.cur != nil {
+		b.cur.Release()
+		b.cur = nil
+	}
+	var recs []arrow.RecordBatch
+	defer func() {
+		for _, r := range recs {
+			r.Release()
+		}
+	}()
+	var n int64
+	for n < batchRows && b.RecordReader.Next() {
+		r := b.RecordReader.RecordBatch()
+		r.Retain()
+		recs = append(recs, r)
+		n += r.NumRows()
+	}
+	switch len(recs) {
+	case 0:
+		return false
+	case 1:
+		b.cur, recs = recs[0], nil
+		return true
+	}
+	cols := make([]arrow.Array, len(recs[0].Columns()))
+	defer func() {
+		for _, c := range cols {
+			if c != nil {
+				c.Release()
+			}
+		}
+	}()
+	for i := range cols {
+		parts := make([]arrow.Array, len(recs))
+		for j, r := range recs {
+			parts[j] = r.Column(i)
+		}
+		c, err := array.Concatenate(parts, memory.DefaultAllocator)
+		if err != nil {
+			b.err = fmt.Errorf("flightsql.batcher: %w", err)
+			return false
+		}
+		cols[i] = c
+	}
+	b.cur = array.NewRecordBatch(b.Schema(), cols, n)
+	return true
+}
+
+func (b *batcher) RecordBatch() arrow.RecordBatch { return b.cur }
+
+//nolint:staticcheck // Record wajib ada di array.RecordReader (deprecated alias)
+func (b *batcher) Record() arrow.RecordBatch { return b.cur }
+
+func (b *batcher) Err() error {
+	if b.err != nil {
+		return b.err
+	}
+	return b.RecordReader.Err()
+}
+
+func (b *batcher) Release() {
+	if b.cur != nil {
+		b.cur.Release()
+		b.cur = nil
+	}
+	b.RecordReader.Release()
 }
 
 // --- metadata ---

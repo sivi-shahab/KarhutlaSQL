@@ -44,6 +44,12 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# SBOM CycloneDX per arsip (syft harus ada di PATH; lihat `make sbom`).
+sboms:
+  - artifacts: archive
+    documents: ["{{ .ArtifactName }}.sbom.cdx.json"]
+    args: ["$artifact", "--output", "cyclonedx-json=$document"]
+
 changelog:
   disable: true # CHANGELOG.md dikelola manual
 

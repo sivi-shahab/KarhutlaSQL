@@ -114,6 +114,9 @@ func dropTargets(d *pg.DropStmt) ([]Target, error) {
 		default:
 			return nil, fmt.Errorf("sqlrewrite.WriteTargets: %w", ErrUnsupported)
 		}
+		if len(parts) == 0 || len(parts) > 3 {
+			return nil, fmt.Errorf("sqlrewrite.WriteTargets: %w: name %q", ErrUnsupported, strings.Join(parts, "."))
+		}
 		for i := range parts {
 			parts[i] = strings.ToLower(parts[i])
 		}

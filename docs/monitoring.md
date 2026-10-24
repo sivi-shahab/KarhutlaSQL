@@ -70,9 +70,10 @@ WHERE duration_ms > 1000 ORDER BY started_at DESC;
   (`enable_profiling = 'no_output'`). Peak memory = puncak buffer manager
   DuckDB selama statement — dipakai bersama, jadi di bawah konkurensi ikut
   menghitung statement lain. `plan_hash` = hash pohon operator fisik: query
-  yang hanya beda literal punya hash sama. Biaya ~1–5 ms per statement
-  (satu `SET` per koneksi statement + timer operator); `--query-profiling=false`
-  mematikannya (kedua kolom NULL).
+  yang hanya beda literal punya hash sama. **Default mati**: aktifkan dengan
+  `--query-profiling` (tanpa itu kedua kolom NULL). Timer per operator mahal
+  pada query paralel besar — benchmark TPC-H SF10 menambah ~13% waktu
+  eksekusi (ADR 33).
 - Eksekusi ≥ `--slow-query-threshold` (default 10s, 0 = mati) dicatat ke log
   sebagai `"msg":"slow_query"` dengan field yang sama.
 

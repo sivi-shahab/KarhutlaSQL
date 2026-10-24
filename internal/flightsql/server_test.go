@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -266,6 +267,40 @@ func TestStatement(t *testing.T) {
 				t.Fatalf("rows=%d v0=%q", len(rows), rows[0])
 			}
 		})
+	}
+}
+
+// TestStatement_BatchSize: vektor DuckDB (2048 baris) digabung menjadi batch
+// 64k baris (spec §6); isi dan urutan utuh.
+func TestStatement_BatchSize(t *testing.T) {
+	env := startServer(t, "")
+	info, err := env.cl.Execute(env.ctx, "SELECT range AS i, 'v' || range AS s FROM range(200000) ORDER BY i")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rdr, err := env.cl.DoGet(env.ctx, info.Endpoint[0].Ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rdr.Release()
+	var sizes []int64
+	next := int64(0)
+	for rdr.Next() {
+		rec := rdr.RecordBatch()
+		sizes = append(sizes, rec.NumRows())
+		ids := rec.Column(0).(*array.Int64)
+		for r := range int(rec.NumRows()) {
+			if ids.Value(r) != next || rec.Column(1).ValueStr(r) != fmt.Sprintf("v%d", next) {
+				t.Fatalf("row %d = %d/%s", next, ids.Value(r), rec.Column(1).ValueStr(r))
+			}
+			next++
+		}
+	}
+	if err := rdr.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(sizes) != "[65536 65536 65536 3392]" {
+		t.Errorf("batch sizes %v", sizes)
 	}
 }
 

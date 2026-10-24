@@ -77,7 +77,7 @@ scheduler:
 # Request RPC/detik per user (token bucket); 0 = mati.
 rateLimit: { perUser: 0, burst: 20 }
 slowQueryThreshold: 10s
-queryProfiling: true
+queryProfiling: false   # peak memory & plan hash di query history; +~13% waktu eksekusi
 extraArgs: []
 
 persistence:

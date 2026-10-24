@@ -68,10 +68,30 @@ Default image: `--database-filename /data/warehouse.duckdb --username admin --tl
 
 Kubernetes: lihat `deploy/helm/` dan [docs/deploy-k8s.md](docs/deploy-k8s.md).
 
+## Benchmark (TPC-H SF10)
+
+`tests/bench/tpch_bench.py`, 5 ronde bergantian, median per query; klien ADBC
+Python end-to-end vs DuckDB CLI 1.5.6 (`.mode trash`) pada file yang sama.
+Mesin dev: 16 vCPU, 15 GB RAM, WSL2 (CPU berbagi dengan host — angka absolut
+berfluktuasi, rasio antar konfigurasi stabil).
+
+| | Total 22 query | Overhead vs CLI |
+|---|---|---|
+| DuckDB CLI | 19,13 s | — |
+| karhutlasql-server (default, profiling mati) | 22,41 s | **+17,2%** |
+| karhutlasql-server `--query-profiling` | 24,84 s | +29,9% |
+
+- Lapisan server sendiri (auth, authz, scheduler, Arrow/gRPC) ≈ +1%; sisanya
+  jalur eksekusi duckdb-go yang memmaterialisasi hasil (ADR 17, ADR 33).
+  Target spec < 5% **belum tercapai**.
+- Hasil besar (7,6 juta baris `lineitem`): CLI 2,3 s; server 17,7 s, batch
+  pertama setelah 4,4 s, RSS server 4,3 GiB — hasil belum di-stream.
+- Batch Arrow ke klien: 64k baris.
+
 ## Dokumentasi
 
 - [docs/install.md](docs/install.md) · [docs/config.md](docs/config.md) · [docs/auth.md](docs/auth.md) · [docs/policy.md](docs/policy.md) · [docs/monitoring.md](docs/monitoring.md) · [docs/client.md](docs/client.md)
-- Desain: [spec.md](spec.md) · [arsitektur.md](arsitektur.md) · [plan.md](plan.md) · [docs/adr/](docs/adr/)
+- Desain: [spec.md](spec.md) · [arsitektur.md](arsitektur.md) · [plan.md](plan.md) · [ADR](arsitektur.md) (§10)
 - Riset fitur & kepatuhan: [docs/research/fitur-lanjutan.md](docs/research/fitur-lanjutan.md)
 
 ## Pengembangan

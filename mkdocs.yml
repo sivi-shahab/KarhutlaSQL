@@ -1,0 +1,25 @@
+site_name: KarhutlaSQL
+site_description: Arrow Flight SQL di atas DuckDB — server SQL analitik dengan governance
+docs_dir: docs
+strict: true
+theme:
+  name: mkdocs
+  locale: id
+markdown_extensions:
+  - tables
+  - toc:
+      permalink: true
+nav:
+  - Beranda: index.md
+  - Instalasi: install.md
+  - Referensi konfigurasi: config.md
+  - Klien: client.md
+  - Autentikasi: auth.md
+  - Policy & governance: policy.md
+  - Monitoring: monitoring.md
+  - Report run: reports.md
+  - Data quality: data-quality.md
+  - Unity Catalog: catalog.md
+  - Kubernetes: deploy-k8s.md
+  - Prosedur rilis: release.md
+  - Riset fitur & kepatuhan: research/fitur-lanjutan.md

@@ -1,34 +1,44 @@
 //go:build duckdb_arrow
 
-// Command testdata membuat tests/data/tpch_sf0_01.duckdb memakai engine yang
-// sama dengan server (versi storage DuckDB dijamin cocok).
+// Command testdata membuat database TPC-H (default sf 0.01 untuk test,
+// sf 10 untuk benchmark) memakai engine yang sama dengan server (versi
+// storage DuckDB dijamin cocok).
 package main
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 )
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: testdata <out.duckdb>")
+	if len(os.Args) < 2 || len(os.Args) > 3 {
+		fmt.Fprintln(os.Stderr, "usage: testdata <out.duckdb> [scale factor, default 0.01]")
 		os.Exit(2)
 	}
-	if err := run(os.Args[1]); err != nil {
+	sf := "0.01"
+	if len(os.Args) == 3 {
+		if _, err := strconv.ParseFloat(os.Args[2], 64); err != nil {
+			fmt.Fprintln(os.Stderr, "testdata: scale factor:", err)
+			os.Exit(2)
+		}
+		sf = os.Args[2]
+	}
+	if err := run(os.Args[1], sf); err != nil {
 		fmt.Fprintln(os.Stderr, "testdata:", err)
 		os.Exit(1)
 	}
 }
 
-func run(out string) error {
+func run(out, sf string) error {
 	if err := os.Remove(out); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	ctx := context.Background()
-	e, err := duckdb.Open(ctx, duckdb.Config{Path: out, InitSQL: "INSTALL tpch; LOAD tpch; CALL dbgen(sf = 0.01);"})
+	e, err := duckdb.Open(ctx, duckdb.Config{Path: out, InitSQL: "INSTALL tpch; LOAD tpch; CALL dbgen(sf = " + sf + ");"})
 	if err != nil {
 		return err
 	}

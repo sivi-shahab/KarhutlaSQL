@@ -124,7 +124,7 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.Float64("rate-limit", 0, "request RPC per detik per user (token bucket); 0 = mati")
 	fs.Int("rate-burst", 20, "burst token bucket rate limit")
 	fs.Duration("slow-query-threshold", 10*time.Second, "eksekusi (di luar antre) selama ini dicatat ke log slow_query; 0 = mati")
-	fs.Bool("query-profiling", true, "profiling DuckDB per statement untuk peak memory & plan hash di karhutla_query_history() (+~1-5 ms/statement)")
+	fs.Bool("query-profiling", false, "profiling DuckDB per statement untuk peak memory & plan hash di karhutla_query_history() (mahal: +~13% waktu TPC-H SF10, ADR 33)")
 	fs.String("archive-dir", "", "arsip access-history & report di direktori lokal (dev; bukan WORM)")
 	fs.String("archive-s3-endpoint", "", "endpoint S3/MinIO arsip (host:port); bucket wajib object-lock")
 	fs.String("archive-s3-bucket", "", "bucket arsip (object-lock aktif)")

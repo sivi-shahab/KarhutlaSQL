@@ -2,7 +2,7 @@
 
 ## Prasyarat
 
-- Go 1.25+ (minimum dari dependency arrow-go/grpc), GCC/Clang (CGO untuk DuckDB), Make
+- Go 1.26+ (minimum dari dependency; `golang.org/x/net` v0.60 sejak Fase 7), GCC/Clang (CGO untuk DuckDB), Make
 - Docker (integration test: Keycloak dev)
 - Python 3.11+ (`tests/python`): `python -m venv .venv && .venv/bin/pip install -r tests/python/requirements.txt`
 - golangci-lint, goreleaser (opsional)

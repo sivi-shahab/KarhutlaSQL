@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,8 +30,10 @@ import (
 
 	"github.com/bankmega/karhutlasql/internal/accesslog"
 	"github.com/bankmega/karhutlasql/internal/audit"
+	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
 	"github.com/bankmega/karhutlasql/internal/authz"
+	"github.com/bankmega/karhutlasql/internal/cache"
 	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/dq"
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
@@ -70,6 +73,8 @@ columns:
   warehouse.main.nasabah.nik: pii.nik
   warehouse.main.nasabah.phone: pii.phone
   warehouse.main.nasabah.saldo: fin.balance
+subjects:
+  warehouse.main.nasabah: nik
 `
 
 const govInit = `ATTACH ':memory:' AS warehouse; ATTACH ':memory:' AS sandbox;
@@ -696,5 +701,155 @@ func TestDQPublishAndGate(t *testing.T) {
 	}
 	if strings.Join(published, ",") != "FailedPrecondition,InvalidArgument,OK,OK" {
 		t.Errorf("dq_published audit %v", published)
+	}
+}
+
+// Result cache (Fase 8b, ADR 36): per identitas, governance tetap berlaku,
+// invalidasi saat data berubah, fungsi volatil tidak di-cache.
+func TestResultCache(t *testing.T) {
+	g := startGov(t, func(o *envOpts) { o.cache = cache.New(time.Minute, 1<<20, 1<<20) })
+	hits := func() int {
+		n := 0
+		for _, e := range g.audit.ofType(audit.StatementEnd) {
+			if e.Detail == "result_cache_hit" {
+				n++
+			}
+		}
+		return n
+	}
+	q := "SELECT nik, saldo FROM warehouse.nasabah ORDER BY nik"
+	a1, err := g.rows("analyst", q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, _ := g.rows("analyst", q)
+	if hits() != 1 || strings.Join(a1, "") != strings.Join(a2, "") || strings.Contains(a2[0], g.secret) {
+		t.Fatalf("second analyst run: hits=%d %v", hits(), a2)
+	}
+	// Identitas lain (admin, unmasked) tidak mendapat hasil analyst, dan sebaliknya.
+	o1, _ := g.rows("ops", q)
+	if hits() != 1 || !strings.HasPrefix(o1[0], g.secret) {
+		t.Fatalf("ops got cached analyst result: hits=%d %v", hits(), o1)
+	}
+	// Tulis → versi data berubah → miss.
+	if _, err := g.rows("ops", "UPDATE warehouse.nasabah SET saldo = 0 WHERE nama = 'Nama 1'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.rows("analyst", q); err != nil || hits() != 1 {
+		t.Fatalf("after write: hits=%d err=%v", hits(), err)
+	}
+	// Fungsi volatil (juga di balik CTE) tidak pernah di-cache.
+	for range 2 {
+		if _, err := g.rows("ops", "WITH x AS (SELECT random() AS r) SELECT r FROM x"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.rows("ops", "SELECT now(), count(*) FROM warehouse.nasabah"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if hits() != 1 {
+		t.Errorf("volatile query served from cache: hits=%d", hits())
+	}
+	// HMAC mask (nonce berbeda per run) tetap bisa di-cache; access history tetap tercatat.
+	for range 2 {
+		if _, err := g.rows("analyst", "SELECT phone FROM warehouse.nasabah ORDER BY nama LIMIT 2"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if hits() != 2 {
+		t.Errorf("hmac-masked query not cached: hits=%d", hits())
+	}
+}
+
+// Kuota per tim + chargeback (Fase 8b).
+func TestQuotaAndChargeback(t *testing.T) {
+	p, err := authz.Parse([]byte(govPolicy + `
+quotas:
+  team_claim: preferred_username
+  interval: 1h
+  teams:
+    agent: { max_queries: 2 }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := startGov(t, func(o *envOpts) { o.policy = authz.Static(p) })
+	for i := range 3 {
+		_, err := g.rows("agent", "SELECT count(*) FROM warehouse.nasabah")
+		if want := i == 2; (status.Code(err) == codes.ResourceExhausted) != want {
+			t.Fatalf("agent query %d: %v", i+1, err)
+		}
+	}
+	if _, err := g.rows("analyst", "SELECT 1"); err != nil { // tim lain tidak terpengaruh
+		t.Fatal(err)
+	}
+	all, err := g.rows("ops", "SELECT team, queries, total_queries, rows FROM karhutla_chargeback() ORDER BY team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(all, " ") != "agent|2|2|2| analyst|1|1|1|" {
+		t.Errorf("admin chargeback %v", all)
+	}
+	own, err := g.rows("analyst", "SELECT team FROM karhutla_chargeback()")
+	if err != nil || strings.Join(own, " ") != "analyst|" {
+		t.Errorf("analyst sees %v %v", own, err)
+	}
+}
+
+// audit.pii_access (Fase 8b): akses ke kolom PII subjek, dikurangi row filter
+// yang tidak mencakup barisnya.
+func TestPIIAccess(t *testing.T) {
+	g := startGov(t)
+	for user, q := range map[string]string{
+		"analyst": "SELECT nik, nama FROM warehouse.nasabah",
+		"cabang":  "SELECT nik FROM warehouse.nasabah",
+		"agent":   "SELECT nama FROM warehouse.nasabah", // tanpa kolom bertag
+		"ops":     "SELECT phone FROM warehouse.nasabah WHERE nama = 'Nama 2'",
+	} {
+		if _, err := g.rows(user, q); err != nil {
+			t.Fatalf("%s: %v", user, err)
+		}
+	}
+	call := func(roles []string, subject string) ([]PIIAccess, error) {
+		ctx := auth.WithIdentity(context.Background(), auth.Identity{Subject: "dpo1", Source: "oidc", Roles: roles})
+		day := time.Now().UTC().Format(time.DateOnly)
+		body, _ := json.Marshal(map[string]string{"subject_id": subject, "from": day, "to": day})
+		res, err := g.srv.PIIAccessAction(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		var out []PIIAccess
+		return out, json.Unmarshal(res, &out)
+	}
+	if _, err := call([]string{"analyst"}, g.secret+"0001"); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("analyst: %v", err)
+	}
+	summary := func(as []PIIAccess) string {
+		var parts []string
+		for _, a := range as {
+			cols := slices.Sorted(maps.Keys(a.Columns))
+			parts = append(parts, a.User+":"+strings.Join(cols, ",")+":"+a.Match)
+		}
+		slices.Sort(parts)
+		return strings.Join(parts, " ")
+	}
+	// Nasabah 1 (cabang 0456): row filter cabang 0123 tidak mencakupnya.
+	got, err := call([]string{RolePDPO}, g.secret+"0001")
+	if err != nil || summary(got) != "analyst:nik:unfiltered ops:phone:unfiltered" {
+		t.Errorf("subject 1: %s %v", summary(got), err)
+	}
+	// Nasabah 2 (cabang 0123): akses cabang tercantum.
+	got, _ = call([]string{auth.RoleAdmin}, g.secret+"0002")
+	if summary(got) != "analyst:nik:unfiltered cabang:nik:row_filter_matches ops:phone:unfiltered" {
+		t.Errorf("subject 2: %s", summary(got))
+	}
+	if got[0].Columns["nik"] == "unmasked" || got[0].RequestID == "" {
+		t.Errorf("entry %+v", got[0])
+	}
+	// Audit tidak memuat subject_id mentah.
+	for _, e := range g.audit.ofType(audit.PIIAccessQuery) {
+		if strings.Contains(e.Object+e.Detail, g.secret) {
+			t.Errorf("raw subject in audit: %+v", e)
+		}
 	}
 }

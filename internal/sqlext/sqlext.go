@@ -26,6 +26,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/dq"
+	"github.com/bankmega/karhutlasql/internal/quota"
 	"github.com/bankmega/karhutlasql/internal/session"
 )
 
@@ -51,6 +52,8 @@ type Deps struct {
 	// kosong = data terkini, selain itu versi/waktu snapshot DuckLake. Hasil
 	// satu baris kolom reportCols. nil = fungsi menolak.
 	RunReport func(ctx context.Context, name, asOf string) ([]any, error)
+	// Quota pemakaian per tim untuk karhutla_chargeback(); nil = kosong.
+	Quota *quota.Tracker
 	// MaskKey kunci HMAC-SHA256 untuk mask hash_hmac (G-03); kosong = fungsi
 	// mask menolak semua pemanggilan.
 	MaskKey []byte
@@ -73,6 +76,7 @@ func Register(_ context.Context, conn *sql.Conn, d Deps) error {
 		"karhutla_query_history":  table(historyCols, nil, nil, d.history),
 		"karhutla_access_history": table(accessCols, nil, nil, d.access),
 		"karhutla_dq_results":     table(dqCols, nil, nil, d.dqResults),
+		"karhutla_chargeback":     table(chargebackCols, nil, nil, d.chargeback),
 		// Nama terpisah: duckdb-go gagal bila named argument tidak diberikan dan
 		// DuckDB mengabaikan registrasi overload kedua.
 		"karhutla_report_run":           table(reportCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, nil, d.report),
@@ -152,7 +156,11 @@ var (
 		{"evaluated", duckdb.TYPE_BIGINT}, {"failed_critical", duckdb.TYPE_BIGINT}, {"failed_warning", duckdb.TYPE_BIGINT},
 		{"validated_at", duckdb.TYPE_TIMESTAMP_TZ}, {"run_by", duckdb.TYPE_VARCHAR}, {"results", duckdb.TYPE_VARCHAR},
 	}
-	killCols   = []col{{"session_id", duckdb.TYPE_VARCHAR}, {"killed", duckdb.TYPE_BOOLEAN}}
+	killCols = []col{{"session_id", duckdb.TYPE_VARCHAR}, {"killed", duckdb.TYPE_BOOLEAN}}
+	// chargebackCols karhutla_chargeback(): jendela kuota berjalan + total sejak start.
+	chargebackCols = []col{{"team", duckdb.TYPE_VARCHAR}, {"window_start", duckdb.TYPE_TIMESTAMP_TZ},
+		{"queries", duckdb.TYPE_BIGINT}, {"exec_seconds", duckdb.TYPE_DOUBLE}, {"rows", duckdb.TYPE_BIGINT}, {"bytes", duckdb.TYPE_BIGINT},
+		{"total_queries", duckdb.TYPE_BIGINT}, {"total_exec_seconds", duckdb.TYPE_DOUBLE}, {"total_rows", duckdb.TYPE_BIGINT}, {"total_bytes", duckdb.TYPE_BIGINT}}
 	metricCols = []col{{"name", duckdb.TYPE_VARCHAR}, {"labels", duckdb.TYPE_VARCHAR}, {"type", duckdb.TYPE_VARCHAR}, {"value", duckdb.TYPE_DOUBLE}}
 )
 
@@ -388,6 +396,27 @@ func (d Deps) kill(ctx context.Context, args []any, _ map[string]any) ([][]any, 
 
 // metrics meratakan snapshot gatherer: histogram → _bucket{le}/_sum/_count,
 // summary → {quantile}/_sum/_count.
+// chargeback: pemakaian per tim; admin melihat semua tim, user lain hanya timnya.
+func (d Deps) chargeback(ctx context.Context, _ []any, _ map[string]any) ([][]any, error) {
+	id, err := identity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if d.Quota == nil {
+		return nil, nil
+	}
+	team := d.Quota.Team(id)
+	var out [][]any
+	for _, r := range d.Quota.Rows() {
+		if !id.HasRole(auth.RoleAdmin) && r.Team != team {
+			continue
+		}
+		out = append(out, []any{r.Team, ts(r.WindowStart), r.Window.Queries, r.Window.ExecSeconds, r.Window.Rows, r.Window.Bytes,
+			r.Total.Queries, r.Total.ExecSeconds, r.Total.Rows, r.Total.Bytes})
+	}
+	return out, nil
+}
+
 func (d Deps) metrics(ctx context.Context, _ []any, _ map[string]any) ([][]any, error) {
 	if _, err := identity(ctx); err != nil {
 		return nil, err

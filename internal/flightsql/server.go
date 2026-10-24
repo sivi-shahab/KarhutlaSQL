@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -19,6 +21,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/flight/flightsql/schema_ref"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -26,17 +32,23 @@ import (
 	"github.com/bankmega/karhutlasql/internal/audit"
 	"github.com/bankmega/karhutlasql/internal/auth"
 	"github.com/bankmega/karhutlasql/internal/authz"
+	"github.com/bankmega/karhutlasql/internal/cache"
 	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/dq"
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/metrics"
 	"github.com/bankmega/karhutlasql/internal/objstore"
+	"github.com/bankmega/karhutlasql/internal/quota"
 	"github.com/bankmega/karhutlasql/internal/report"
 	"github.com/bankmega/karhutlasql/internal/scheduler"
 	"github.com/bankmega/karhutlasql/internal/session"
 	"github.com/bankmega/karhutlasql/internal/sqlext"
 	"github.com/bankmega/karhutlasql/internal/version"
 )
+
+// tracer span statement (no-op bila OpenTelemetry tidak dikonfigurasi).
+// Atribut hanya hash SQL, tidak pernah teks SQL atau nilai data.
+var tracer = otel.Tracer("github.com/bankmega/karhutlasql/internal/flightsql")
 
 // ticketTTL batas umur statement handle yang belum di-DoGet.
 const ticketTTL = 10 * time.Minute
@@ -76,6 +88,10 @@ type Options struct {
 	Profiling bool
 	// SlowQuery durasi eksekusi (di luar antre) yang dicatat ke log slow_query; 0 = mati.
 	SlowQuery time.Duration
+	// Cache result cache SELECT (ADR 36); nil = mati.
+	Cache *cache.Cache
+	// Quota kuota & chargeback per tim (policy quotas); nil = tidak dihitung.
+	Quota *quota.Tracker
 }
 
 // Server mengimplementasikan flightsql.Server di atas engine.Engine.
@@ -84,6 +100,9 @@ type Server struct {
 	eng  engine.Engine
 	log  *slog.Logger
 	opts Options
+	// writes jumlah statement non-SELECT yang dieksekusi: versi data catalog
+	// DuckDB lokal untuk kunci result cache.
+	writes atomic.Int64
 }
 
 // stmtHandle SQL statement yang menunggu DoGet (disimpan di sesi pemilik).
@@ -303,6 +322,9 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 	}
 
 	qctx, done := ss.Begin(ctx, sql)
+	qctx, span := tracer.Start(qctx, "statement", trace.WithAttributes(attribute.String("karhutla.kind", kind),
+		attribute.String("karhutla.request_id", audit.RequestID(ctx)), attribute.String("enduser.id", id.Subject),
+		attribute.String("karhutla.sql_sha256", ev.SQLHash)))
 	cancel, release := context.CancelFunc(func() {}), func() {}
 	t0 := time.Now()
 	hq := session.Query{RequestID: audit.RequestID(ctx), SessionID: ss.ID, User: id.Subject, Kind: kind, SQL: s.opts.Audit.Redact(sql), StartedAt: t0}
@@ -317,6 +339,15 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 		ss.Bytes.Add(bytes)
 		fin := ev
 		fin.Type, fin.Rows, fin.DurationMS = audit.StatementEnd, rows, time.Since(t0).Milliseconds()
+		if pl.hit != nil && *pl.hit {
+			fin.Detail = "result_cache_hit"
+		}
+		if !tExec.IsZero() && pl.final.Kind != "SELECT" {
+			s.writes.Add(1) // sebelum/ sesudah sukses: invalidasi konservatif
+		}
+		if s.opts.Quota != nil && !tExec.IsZero() && !pl.control {
+			s.opts.Quota.Add(id, quota.Usage{Queries: 1, ExecSeconds: time.Since(tExec).Seconds(), Rows: rows, Bytes: bytes})
+		}
 		switch {
 		case err != nil:
 			fin.Status, fin.Error = status.Code(err).String(), status.Convert(err).Message()
@@ -326,6 +357,13 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 			fin.Status = codes.OK.String()
 		}
 		s.opts.Audit.Emit(ctx, fin)
+		span.SetAttributes(attribute.String("karhutla.status", fin.Status), attribute.Int64("karhutla.rows", rows),
+			attribute.Int64("karhutla.bytes", bytes), attribute.String("karhutla.resource_group", pl.limits.Group),
+			attribute.Bool("karhutla.result_cache_hit", fin.Detail == "result_cache_hit"))
+		if fin.Status != codes.OK.String() {
+			span.SetStatus(otelcodes.Error, fin.Status)
+		}
+		span.End()
 		s.opts.Metrics.Statement(id.Subject, fin.Status, time.Since(t0))
 		if kind == "query" {
 			s.opts.Metrics.Sent(id.Subject, rows, bytes)
@@ -361,10 +399,20 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 			return nil, plan{}, nil, err
 		}
 	}
-	pl, err = s.authorize(qctx, sql)
+	actx, aspan := tracer.Start(qctx, "authorize")
+	pl, err = s.authorize(actx, sql)
+	aspan.End()
 	if err != nil {
 		end(0, 0, err)
 		return nil, plan{}, nil, err
+	}
+	pl.hit = new(bool)
+	if s.opts.Quota != nil && !pl.control { // kontrol admin (kill) tidak terkena kuota
+		if err := s.opts.Quota.Check(id); err != nil {
+			err = status.Error(codes.ResourceExhausted, err.Error())
+			end(0, 0, err)
+			return nil, plan{}, nil, err
+		}
 	}
 	hq.Group = pl.limits.Group
 	g, ok := s.opts.Policy.Policy().ResourceGroups[pl.limits.Group]
@@ -375,7 +423,9 @@ func (s *Server) begin(ctx context.Context, kind, sql string) (context.Context, 
 		if pl.control {
 			return func() {}, 0, nil
 		}
-		return s.opts.Scheduler.Acquire(qctx, pl.limits.Group, g)
+		sctx, sspan := tracer.Start(qctx, "queue", trace.WithAttributes(attribute.String("karhutla.resource_group", pl.limits.Group)))
+		defer sspan.End()
+		return s.opts.Scheduler.Acquire(sctx, pl.limits.Group, g)
 	}()
 	hq.QueueWait = wait
 	if !pl.control {
@@ -418,16 +468,67 @@ func (s *Server) query(ctx context.Context, sql string, params []any) (*arrow.Sc
 	if err != nil {
 		return nil, nil, err
 	}
-	rdr, err := s.eng.Query(qctx, pl.sql, params...)
-	if err != nil {
-		err = toStatus(qctx, err)
-		end(0, 0, err)
-		return nil, nil, err
+	key := s.cacheKey(qctx, pl, params)
+	var src array.RecordReader
+	if key != "" {
+		if r, ok := s.opts.Cache.Get(key); ok {
+			*pl.hit, src = true, r
+		}
 	}
-	ar := &auditedReader{RecordReader: &batcher{RecordReader: rdr}, qctx: qctx, end: end, maxBytes: pl.limits.MaxBytes}
+	if src == nil {
+		rdr, err := s.eng.Query(qctx, pl.sql, params...)
+		if err != nil {
+			err = toStatus(qctx, err)
+			end(0, 0, err)
+			return nil, nil, err
+		}
+		src = &batcher{RecordReader: rdr}
+		if key != "" {
+			src = s.opts.Cache.Writer(key, src)
+		}
+	}
+	ar := &auditedReader{RecordReader: src, qctx: qctx, end: end, maxBytes: pl.limits.MaxBytes}
 	ch := make(chan flight.StreamChunk)
 	go flight.StreamChunksFromReader(ctx, ar, ch)
-	return rdr.Schema(), ch, nil
+	return src.Schema(), ch, nil
+}
+
+// pureFunctions table function yang hasilnya hanya bergantung pada argumen.
+var pureFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST"}
+
+// cacheKey kunci result cache untuk pl, atau "" bila tidak boleh di-cache
+// (ADR 36): hanya SELECT tanpa table function dinamis, tanpa fungsi volatil
+// (termasuk di dalam view), atas catalog yang versinya diketahui. Kunci =
+// identitas + SQL yang dieksekusi setelah governance (mask/RLS/LIMIT dengan
+// nilai claim, nonce dinormalisasi) + parameter + versi data, sehingga
+// perubahan policy/classification/claim/data otomatis meleset.
+// ponytail: hit tetap melewati antrean resource group (slot dilepas segera).
+func (s *Server) cacheKey(ctx context.Context, pl plan, params []any) string {
+	if s.opts.Cache == nil || pl.final.Kind != "SELECT" || pl.control {
+		return ""
+	}
+	for _, f := range pl.final.Functions {
+		if !slices.Contains(pureFunctions, f) {
+			return ""
+		}
+	}
+	ver, ok, err := s.eng.DataVersion(ctx, pl.final.Catalogs)
+	if err != nil || !ok {
+		return ""
+	}
+	if det, err := s.eng.Deterministic(ctx, pl.sql); err != nil || !det {
+		return ""
+	}
+	id, _ := auth.FromContext(ctx)
+	sql := pl.sql
+	if pl.nonce != "" {
+		sql = strings.ReplaceAll(sql, pl.nonce, "")
+	}
+	parts := []string{id.Source, id.Subject, sql, ver, strconv.FormatInt(s.writes.Load(), 10)}
+	for _, p := range params {
+		parts = append(parts, fmt.Sprintf("%T:%v", p, p))
+	}
+	return cache.Key(parts...)
 }
 
 // update mengeksekusi statement untuk setiap baris parameter.

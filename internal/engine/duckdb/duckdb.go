@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -61,6 +62,11 @@ type Engine struct {
 	connector *duckdbdrv.Connector
 	closed    atomic.Bool
 	streamErr error // nil = SELECT tanpa parameter di-stream (stream.go)
+
+	// Fungsi ber-stability CONSISTENT (Deterministic), dimuat sekali.
+	consistentOnce sync.Once
+	consistent     map[string]bool
+	consistentErr  error
 }
 
 var _ engine.Engine = (*Engine)(nil)

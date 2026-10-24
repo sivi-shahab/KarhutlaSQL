@@ -18,6 +18,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/bankmega/karhutlasql/internal/auth"
+	"github.com/bankmega/karhutlasql/internal/quota"
 	"github.com/bankmega/karhutlasql/internal/scheduler"
 )
 
@@ -62,6 +63,8 @@ type Policy struct {
 	Subjects []Subject       `yaml:"subjects"`
 	// ResourceGroups kelas beban (G-08); grup "default" (dari flag) boleh di-override.
 	ResourceGroups map[string]scheduler.Group `yaml:"resource_groups"`
+	// Quotas kuota per tim per jendela waktu + chargeback (Fase 8b).
+	Quotas quota.Config `yaml:"quotas"`
 }
 
 // Allowlist identitas OIDC yang boleh masuk (E-02); identitas lokal tidak
@@ -161,6 +164,9 @@ func (p *Policy) validate() error {
 			errs = append(errs, fmt.Errorf("role %s: undefined resource_group %q", name, r.ResourceGroup))
 		}
 		p.Roles[name] = r
+	}
+	if err := p.Quotas.Validate(); err != nil {
+		errs = append(errs, err)
 	}
 	for name, g := range p.ResourceGroups {
 		if err := g.Validate(); err != nil {

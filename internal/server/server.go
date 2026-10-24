@@ -19,6 +19,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	fsql "github.com/apache/arrow-go/v18/arrow/flight/flightsql"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -39,6 +40,9 @@ type Options struct {
 	// Actions tipe Flight DoAction tambahan (admin, G-12) → handler (hasil
 	// satu body). Tipe lain diteruskan ke server Flight SQL.
 	Actions map[string]func(ctx context.Context, body []byte) ([]byte, error)
+	// Tracing memasang stats handler OpenTelemetry (span per RPC, propagasi
+	// traceparent dari klien); provider global diatur pemanggil.
+	Tracing bool
 }
 
 // actionServer menambahkan DoAction kustom di depan server Flight SQL.
@@ -74,6 +78,9 @@ func Serve(ctx context.Context, lis net.Listener, srv fsql.Server, opts Options,
 	gopts := []grpc.ServerOption{grpc.ChainUnaryInterceptor(opts.Unary...), grpc.ChainStreamInterceptor(opts.Stream...)}
 	if opts.TLS != nil {
 		gopts = append(gopts, grpc.Creds(credentials.NewTLS(opts.TLS)))
+	}
+	if opts.Tracing {
+		gopts = append(gopts, grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	}
 	gs := grpc.NewServer(gopts...)
 	flight.RegisterFlightServiceServer(gs, actionServer{FlightServer: fsql.NewFlightServer(srv), actions: opts.Actions})

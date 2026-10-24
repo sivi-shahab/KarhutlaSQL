@@ -37,6 +37,11 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | github.com/andybalholm/brotli | MIT | Dependensi arrow-go/parquet (codec) |
 | golang.org/x/sync | BSD-3-Clause | Dependensi arrow-go/parquet |
 | golang.org/x/crypto/ed25519 (stdlib `crypto/ed25519`) | BSD-3-Clause | Tanda tangan manifest report |
+| go.opentelemetry.io/otel, /sdk, /trace, /exporters/otlp/otlptrace/otlptracegrpc, /proto/otlp, /auto/sdk | Apache-2.0 | Tracing OpenTelemetry (Fase 8b) |
+| go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc | Apache-2.0 | Span per RPC gRPC |
+| github.com/go-logr/logr, github.com/go-logr/stdr | Apache-2.0 | Dependensi otel |
+| github.com/cenkalti/backoff/v5 | MIT | Retry exporter OTLP |
+| github.com/grpc-ecosystem/grpc-gateway/v2 | BSD-3-Clause | Dependensi exporter OTLP |
 | github.com/zalando/go-keyring | MIT | *(belum dipakai)* token store keyring klien (E-10); Fase 5 memakai file 0600 |
 
 ## Ekstensi DuckDB (image varian `lake`, Fase 8a)

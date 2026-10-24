@@ -31,6 +31,14 @@ type Engine interface {
 	DeserializeSQL(ctx context.Context, ast string) (string, error)
 	// Columns kolom tabel (nama, tipe SQL engine) urut posisi.
 	Columns(ctx context.Context, catalog, schema, table string) ([]Column, error)
+	// Deterministic melaporkan apakah hasil sql hanya bergantung pada data
+	// (tanpa fungsi volatil seperti random()/now(), termasuk di dalam view);
+	// syarat result cache.
+	Deterministic(ctx context.Context, sql string) (bool, error)
+	// DataVersion versi data catalogs (berubah bila data bisa berubah); ok
+	// false bila salah satu catalog tidak punya versi yang bisa dipercaya
+	// (sumber eksternal). Kunci result cache.
+	DataVersion(ctx context.Context, catalogs []string) (string, bool, error)
 	// Snapshot membuka satu transaksi: semua Query di dalamnya melihat data
 	// yang sama (report run, G-10). Pemanggil wajib Close.
 	Snapshot(ctx context.Context) (Snapshot, error)

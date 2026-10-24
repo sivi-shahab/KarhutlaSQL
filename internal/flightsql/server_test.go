@@ -33,6 +33,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/auth/local"
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
 	"github.com/bankmega/karhutlasql/internal/authz"
+	"github.com/bankmega/karhutlasql/internal/cache"
 	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/dq"
 	"github.com/bankmega/karhutlasql/internal/engine"
@@ -40,6 +41,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/interceptor"
 	"github.com/bankmega/karhutlasql/internal/metrics"
 	"github.com/bankmega/karhutlasql/internal/objstore"
+	"github.com/bankmega/karhutlasql/internal/quota"
 	"github.com/bankmega/karhutlasql/internal/report"
 	"github.com/bankmega/karhutlasql/internal/scheduler"
 	"github.com/bankmega/karhutlasql/internal/server"
@@ -72,6 +74,7 @@ type testEnv struct {
 
 	sessions *session.Registry
 	metrics  *metrics.Metrics
+	srv      *Server
 }
 
 type envOpts struct {
@@ -97,6 +100,7 @@ type envOpts struct {
 	archive   objstore.Store
 	dq        *dq.Store
 	dqMaxAge  time.Duration
+	cache     *cache.Cache
 }
 
 func startServer(t *testing.T, initSQL string) *testEnv {
@@ -114,10 +118,15 @@ func start(t testing.TB, o envOpts) *testEnv {
 	history := session.NewHistory(1000)
 	m := metrics.New(sessions.Counts, sched.Stats)
 	var srv *Server // diisi setelah engine dibuka (UDF report memanggilnya)
+	policy := o.policy
+	if policy == nil {
+		policy = authz.Static(authz.DevPolicy(testUser))
+	}
+	quotas := quota.New(func() quota.Config { return policy.Policy().Quotas })
 	eng := o.engine
 	if eng == nil {
 		d, err := duckdb.Open(ctx, duckdb.Config{InitSQL: o.initSQL, AllowedDirectories: o.allowedDirs, StreamingBufferSize: "4MB", Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, History: history, AccessLog: o.accessLog, MaskKey: o.maskKey, DQ: o.dq,
+			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: al, History: history, AccessLog: o.accessLog, MaskKey: o.maskKey, DQ: o.dq, Quota: quotas,
 				RunReport: func(ctx context.Context, name, asOf string) ([]any, error) { return srv.ReportRow(ctx, name, asOf) }})
 		}})
 		if err != nil {
@@ -137,14 +146,10 @@ func start(t testing.TB, o envOpts) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy := o.policy
-	if policy == nil {
-		policy = authz.Static(authz.DevPolicy(testUser))
-	}
 	srv, err = New(eng, log, Options{
 		QueryTimeout: o.queryTimeout, Audit: al, Metrics: m, Policy: policy, Classification: o.classification,
 		Scheduler: sched, DefaultGroup: o.group, History: history, SlowQuery: o.slowQuery, Profiling: true, AccessLog: o.accessLog,
-		Reports: o.reports, Signer: o.signer, Archive: o.archive, DQ: o.dq, DQMaxAge: o.dqMaxAge,
+		Reports: o.reports, Signer: o.signer, Archive: o.archive, DQ: o.dq, DQMaxAge: o.dqMaxAge, Cache: o.cache, Quota: quotas,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +176,7 @@ func start(t testing.TB, o envOpts) *testEnv {
 	if creds == nil {
 		creds = insecure.NewCredentials()
 	}
-	env := &testEnv{addr: lis.Addr().String(), audit: sink, clock: clock, creds: creds, sessions: sessions, metrics: m}
+	env := &testEnv{addr: lis.Addr().String(), audit: sink, clock: clock, creds: creds, sessions: sessions, metrics: m, srv: srv}
 	env.cl = env.dial(t)
 	t.Cleanup(func() {
 		cancel()

@@ -34,6 +34,9 @@ type Classification struct {
 	Tags map[string]Mask `yaml:"tags"`
 	// Columns "catalog.schema.table.column" → tag.
 	Columns map[string]string `yaml:"columns"`
+	// Subjects "catalog.schema.table" → kolom pengenal subjek data (mis. NIK)
+	// untuk audit.pii_access (UU PDP hak akses subjek).
+	Subjects map[string]string `yaml:"subjects"`
 
 	byTable map[string]map[string]string // table → column → tag (huruf kecil)
 }
@@ -78,6 +81,14 @@ func Parse(b []byte) (*Classification, error) {
 		}
 		c.byTable[table][parts[3]] = tag
 	}
+	subjects := map[string]string{}
+	for table, col := range c.Subjects {
+		if len(strings.Split(table, ".")) != 3 || strings.TrimSpace(col) == "" {
+			errs = append(errs, fmt.Errorf("subjects %s: want catalog.schema.table: column", table))
+		}
+		subjects[strings.ToLower(table)] = strings.ToLower(col)
+	}
+	c.Subjects = subjects
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("classification.Parse: %w", err)
 	}

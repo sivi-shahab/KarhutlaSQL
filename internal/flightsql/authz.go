@@ -26,7 +26,7 @@ import (
 
 // safeFunctions table function yang tidak membaca data di luar catalog dan
 // boleh dipakai tanpa izin admin. karhutla_* menegakkan izinnya sendiri.
-var safeFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST", "KARHUTLA_SESSIONS", "KARHUTLA_METRICS", "KARHUTLA_KILL_SESSION", "KARHUTLA_QUERY_HISTORY", "KARHUTLA_ACCESS_HISTORY", "KARHUTLA_ACCESS_HISTORY_RANGE", "KARHUTLA_REPORT_RUN", "KARHUTLA_REPORT_RUN_AT", "KARHUTLA_DQ_RESULTS"}
+var safeFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST", "KARHUTLA_SESSIONS", "KARHUTLA_METRICS", "KARHUTLA_KILL_SESSION", "KARHUTLA_QUERY_HISTORY", "KARHUTLA_ACCESS_HISTORY", "KARHUTLA_ACCESS_HISTORY_RANGE", "KARHUTLA_REPORT_RUN", "KARHUTLA_REPORT_RUN_AT", "KARHUTLA_DQ_RESULTS", "KARHUTLA_CHARGEBACK"}
 
 // writeKinds statement yang target tulisnya ditentukan sqlrewrite.
 var writeKinds = []string{"INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"}
@@ -48,6 +48,8 @@ type plan struct {
 	// antrean penuh). Hanya admin: fungsi skalar berat tidak terlihat di
 	// Analysis.Functions.
 	control bool
+	// hit diisi query: hasil dari result cache (audit statement_end).
+	hit *bool
 }
 
 func names(a engine.Analysis) sqlrewrite.Names {

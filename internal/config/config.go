@@ -66,6 +66,14 @@ type Config struct {
 
 	// Data quality (Q-05): umur maksimum validasi GX untuk DQ gate report; 0 = gate mati.
 	DQMaxAge time.Duration
+	// Result cache (Fase 8b): TTL 0 = mati.
+	ResultCacheTTL           time.Duration
+	ResultCacheMaxBytes      int64
+	ResultCacheMaxEntryBytes int64
+	// OpenTelemetry tracing (OTLP gRPC); endpoint kosong = mati.
+	OTelEndpoint    string
+	OTelInsecure    bool
+	OTelSampleRatio float64
 
 	// Sinkron Unity Catalog (K-01..K-04); UCEndpoint kosong = mati.
 	UCEndpoint, UCTokenEnv string
@@ -138,6 +146,12 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.Duration("access-log-flush-interval", 30*time.Second, "interval flush access-history ke arsip")
 	fs.String("reports-file", "", "definisi report (reports.yaml) untuk karhutla_report_run()")
 	fs.String("report-signing-key-file", "", "kunci privat Ed25519 PKCS#8 PEM (0600) penanda tangan manifest report")
+	fs.Duration("result-cache-ttl", 0, "umur hasil SELECT di result cache (per identitas, invalidasi saat data berubah); 0 = mati")
+	fs.Int64("result-cache-max-bytes", 256<<20, "batas total byte result cache (LRU)")
+	fs.Int64("result-cache-max-entry-bytes", 20<<20, "hasil lebih besar dari ini tidak di-cache")
+	fs.String("otel-endpoint", "", "collector OTLP gRPC (host:port) untuk tracing OpenTelemetry; header auth lewat env OTEL_EXPORTER_OTLP_HEADERS; kosong = mati")
+	fs.Bool("otel-insecure", false, "OTLP tanpa TLS (dev)")
+	fs.Float64("otel-sample-ratio", 1, "rasio sampling trace baru (0..1); trace dari klien mengikuti keputusan induk")
 	fs.Duration("dq-max-age", 26*time.Hour, "DQ gate report: validasi GX tiap tabel sumber harus lebih muda dari ini; 0 = gate mati")
 	fs.String("uc-endpoint", "", "URL Unity Catalog OSS (mis. http://uc:8080) untuk sinkron metadata satu arah; kosong = mati")
 	fs.String("uc-token-env", "KARHUTLASQL_UC_TOKEN", "nama env var bearer token Unity Catalog (opsional)")
@@ -177,57 +191,63 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		Port:             v.GetInt("port"),
 		InitSQLFile:      v.GetString("init-sql-file"),
 
-		Username:               v.GetString("username"),
-		PasswordEnv:            v.GetString("password-env"),
-		JWTSecretEnv:           v.GetString("jwt-secret-env"),
-		JWTPrivateKeyFile:      v.GetString("jwt-private-key-file"),
-		JWTTTL:                 v.GetDuration("jwt-ttl"),
-		TLSCert:                v.GetString("tls-cert"),
-		TLSKey:                 v.GetString("tls-key"),
-		MTLSCA:                 v.GetString("mtls-ca"),
-		TLSSelfSigned:          v.GetBool("tls-self-signed"),
-		PolicyFile:             v.GetString("policy-file"),
-		ClassificationFile:     v.GetString("classification-file"),
-		MaskKeyEnv:             v.GetString("mask-hmac-key-env"),
-		OIDCIssuer:             v.GetString("oidc-issuer"),
-		OIDCAudience:           v.GetString("oidc-audience"),
-		OIDCUsernameClaim:      v.GetString("oidc-username-claim"),
-		OIDCGroupsClaim:        v.GetString("oidc-groups-claim"),
-		QueryTimeout:           time.Duration(v.GetInt("query-timeout")) * time.Second,
-		SessionIdleTimeout:     v.GetDuration("session-idle-timeout"),
-		MaxConcurrent:          v.GetInt("max-concurrent"),
-		QueueSize:              v.GetInt("queue-size"),
-		QueueTimeout:           v.GetDuration("queue-timeout"),
-		RateLimit:              v.GetFloat64("rate-limit"),
-		RateBurst:              v.GetInt("rate-burst"),
-		SlowQueryThreshold:     v.GetDuration("slow-query-threshold"),
-		QueryProfiling:         v.GetBool("query-profiling"),
-		StreamingBufferSize:    v.GetString("streaming-buffer-size"),
-		ArchiveDir:             v.GetString("archive-dir"),
-		ArchiveS3Endpoint:      v.GetString("archive-s3-endpoint"),
-		ArchiveS3Bucket:        v.GetString("archive-s3-bucket"),
-		ArchiveS3Region:        v.GetString("archive-s3-region"),
-		ArchiveS3AccessKeyEnv:  v.GetString("archive-s3-access-key-env"),
-		ArchiveS3SecretKeyEnv:  v.GetString("archive-s3-secret-key-env"),
-		ArchiveS3Insecure:      v.GetBool("archive-s3-insecure"),
-		ArchiveRetention:       v.GetDuration("archive-retention"),
-		AccessLogFlushInterval: v.GetDuration("access-log-flush-interval"),
-		AllowedDirectories:     v.GetStringSlice("allowed-directories"),
-		FourEyes:               v.GetBool("four-eyes"),
-		DQMaxAge:               v.GetDuration("dq-max-age"),
-		UCEndpoint:             v.GetString("uc-endpoint"),
-		UCTokenEnv:             v.GetString("uc-token-env"),
-		UCSyncInterval:         v.GetDuration("uc-sync-interval"),
-		UCAdvertisedEndpoint:   v.GetString("uc-advertised-endpoint"),
-		ReportsFile:            v.GetString("reports-file"),
-		ReportSigningKeyFile:   v.GetString("report-signing-key-file"),
-		StateDir:               v.GetString("state-dir"),
-		DuckDBSecretsFile:      v.GetString("duckdb-secrets-file"),
-		HealthCheckQuery:       v.GetString("health-check-query"),
-		MetricsPort:            v.GetInt("metrics-port"),
-		PrintQueries:           v.GetBool("print-queries"),
-		AuditLogDir:            v.GetString("audit-log-dir"),
-		AuditLogSQL:            v.GetBool("audit-log-sql"),
+		Username:                 v.GetString("username"),
+		PasswordEnv:              v.GetString("password-env"),
+		JWTSecretEnv:             v.GetString("jwt-secret-env"),
+		JWTPrivateKeyFile:        v.GetString("jwt-private-key-file"),
+		JWTTTL:                   v.GetDuration("jwt-ttl"),
+		TLSCert:                  v.GetString("tls-cert"),
+		TLSKey:                   v.GetString("tls-key"),
+		MTLSCA:                   v.GetString("mtls-ca"),
+		TLSSelfSigned:            v.GetBool("tls-self-signed"),
+		PolicyFile:               v.GetString("policy-file"),
+		ClassificationFile:       v.GetString("classification-file"),
+		MaskKeyEnv:               v.GetString("mask-hmac-key-env"),
+		OIDCIssuer:               v.GetString("oidc-issuer"),
+		OIDCAudience:             v.GetString("oidc-audience"),
+		OIDCUsernameClaim:        v.GetString("oidc-username-claim"),
+		OIDCGroupsClaim:          v.GetString("oidc-groups-claim"),
+		QueryTimeout:             time.Duration(v.GetInt("query-timeout")) * time.Second,
+		SessionIdleTimeout:       v.GetDuration("session-idle-timeout"),
+		MaxConcurrent:            v.GetInt("max-concurrent"),
+		QueueSize:                v.GetInt("queue-size"),
+		QueueTimeout:             v.GetDuration("queue-timeout"),
+		RateLimit:                v.GetFloat64("rate-limit"),
+		RateBurst:                v.GetInt("rate-burst"),
+		SlowQueryThreshold:       v.GetDuration("slow-query-threshold"),
+		QueryProfiling:           v.GetBool("query-profiling"),
+		StreamingBufferSize:      v.GetString("streaming-buffer-size"),
+		ArchiveDir:               v.GetString("archive-dir"),
+		ArchiveS3Endpoint:        v.GetString("archive-s3-endpoint"),
+		ArchiveS3Bucket:          v.GetString("archive-s3-bucket"),
+		ArchiveS3Region:          v.GetString("archive-s3-region"),
+		ArchiveS3AccessKeyEnv:    v.GetString("archive-s3-access-key-env"),
+		ArchiveS3SecretKeyEnv:    v.GetString("archive-s3-secret-key-env"),
+		ArchiveS3Insecure:        v.GetBool("archive-s3-insecure"),
+		ArchiveRetention:         v.GetDuration("archive-retention"),
+		AccessLogFlushInterval:   v.GetDuration("access-log-flush-interval"),
+		AllowedDirectories:       v.GetStringSlice("allowed-directories"),
+		FourEyes:                 v.GetBool("four-eyes"),
+		DQMaxAge:                 v.GetDuration("dq-max-age"),
+		ResultCacheTTL:           v.GetDuration("result-cache-ttl"),
+		ResultCacheMaxBytes:      v.GetInt64("result-cache-max-bytes"),
+		ResultCacheMaxEntryBytes: v.GetInt64("result-cache-max-entry-bytes"),
+		OTelEndpoint:             v.GetString("otel-endpoint"),
+		OTelInsecure:             v.GetBool("otel-insecure"),
+		OTelSampleRatio:          v.GetFloat64("otel-sample-ratio"),
+		UCEndpoint:               v.GetString("uc-endpoint"),
+		UCTokenEnv:               v.GetString("uc-token-env"),
+		UCSyncInterval:           v.GetDuration("uc-sync-interval"),
+		UCAdvertisedEndpoint:     v.GetString("uc-advertised-endpoint"),
+		ReportsFile:              v.GetString("reports-file"),
+		ReportSigningKeyFile:     v.GetString("report-signing-key-file"),
+		StateDir:                 v.GetString("state-dir"),
+		DuckDBSecretsFile:        v.GetString("duckdb-secrets-file"),
+		HealthCheckQuery:         v.GetString("health-check-query"),
+		MetricsPort:              v.GetInt("metrics-port"),
+		PrintQueries:             v.GetBool("print-queries"),
+		AuditLogDir:              v.GetString("audit-log-dir"),
+		AuditLogSQL:              v.GetBool("audit-log-sql"),
 	}
 	if err := c.LogLevel.UnmarshalText([]byte(v.GetString("log-level"))); err != nil {
 		return Config{}, fmt.Errorf("config.Load: log-level: %w", err)
@@ -278,6 +298,12 @@ func (c Config) validate() error {
 	}
 	if c.ArchiveRetention <= 0 || c.AccessLogFlushInterval <= 0 {
 		errs = append(errs, errors.New("archive-retention and access-log-flush-interval must be > 0"))
+	}
+	if c.OTelSampleRatio < 0 || c.OTelSampleRatio > 1 {
+		errs = append(errs, errors.New("otel-sample-ratio must be between 0 and 1"))
+	}
+	if c.ResultCacheTTL < 0 || c.ResultCacheMaxBytes <= 0 || c.ResultCacheMaxEntryBytes <= 0 {
+		errs = append(errs, errors.New("result-cache-ttl must be >= 0 and result-cache-max-*bytes > 0"))
 	}
 	if c.DQMaxAge < 0 || c.UCSyncInterval <= 0 {
 		errs = append(errs, errors.New("dq-max-age must be >= 0 and uc-sync-interval > 0"))

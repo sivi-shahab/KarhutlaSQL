@@ -22,6 +22,12 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.yaml.in/yaml/v3"
 	"google.golang.org/grpc"
 
@@ -32,6 +38,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/auth/local"
 	"github.com/bankmega/karhutlasql/internal/auth/oidc"
 	"github.com/bankmega/karhutlasql/internal/authz"
+	"github.com/bankmega/karhutlasql/internal/cache"
 	"github.com/bankmega/karhutlasql/internal/catalogsync"
 	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/config"
@@ -42,6 +49,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/interceptor"
 	"github.com/bankmega/karhutlasql/internal/metrics"
 	"github.com/bankmega/karhutlasql/internal/objstore"
+	"github.com/bankmega/karhutlasql/internal/quota"
 	"github.com/bankmega/karhutlasql/internal/report"
 	"github.com/bankmega/karhutlasql/internal/scheduler"
 	"github.com/bankmega/karhutlasql/internal/server"
@@ -140,6 +148,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	if err != nil {
 		return err
 	}
+	quotas := quota.New(func() quota.Config { return policy.Policy().Quotas })
 	var oidcVerifier *oidc.Verifier
 	if cfg.OIDCIssuer != "" {
 		oidcVerifier, err = oidc.New(ctx, oidc.Config{Issuer: cfg.OIDCIssuer, Audience: cfg.OIDCAudience,
@@ -176,6 +185,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	sched := scheduler.New()
 	history := session.NewHistory(queryHistorySize)
 	m := metrics.New(sessions.Counts, sched.Stats)
+	m.Registry.MustRegister(quotas)
 	if dqStore != nil {
 		m.Registry.MustRegister(dqStore)
 	}
@@ -191,7 +201,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 	eng, err := duckdb.Open(ctx, duckdb.Config{Path: cfg.DatabaseFilename, InitSQL: initSQL,
 		AllowedDirectories: cfg.AllowedDirectories, Secrets: secrets, StreamingBufferSize: streamingBuffer(cfg.StreamingBufferSize),
 		Setup: func(ctx context.Context, conn *sql.Conn) error {
-			return sqlext.Register(ctx, conn, sqlext.Deps{Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, AccessLog: access, MaskKey: maskKey, DQ: dqStore,
+			return sqlext.Register(ctx, conn, sqlext.Deps{Quota: quotas, Sessions: sessions, Gatherer: m.Registry, Audit: auditLog, History: history, AccessLog: access, MaskKey: maskKey, DQ: dqStore,
 				RunReport: func(ctx context.Context, name, asOf string) ([]any, error) { return srv.ReportRow(ctx, name, asOf) }})
 		}})
 	if err != nil {
@@ -202,12 +212,17 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		log.Warn("result streaming unavailable; results are materialized before the first batch", "reason", err)
 	}
 
+	var resultCache *cache.Cache
+	if cfg.ResultCacheTTL > 0 {
+		resultCache = cache.New(cfg.ResultCacheTTL, cfg.ResultCacheMaxBytes, cfg.ResultCacheMaxEntryBytes)
+		m.Registry.MustRegister(resultCache)
+	}
 	srv, err = flightsql.New(eng, log, flightsql.Options{
 		QueryTimeout: cfg.QueryTimeout, PrintQueries: cfg.PrintQueries, Audit: auditLog, Metrics: m, Policy: policy, Classification: cls,
 		Scheduler: sched, DefaultGroup: scheduler.Group{MaxConcurrent: cfg.MaxConcurrent, QueueSize: cfg.QueueSize, QueueTimeout: cfg.QueueTimeout},
 		History: history, SlowQuery: cfg.SlowQueryThreshold, Profiling: cfg.QueryProfiling, AccessLog: access,
 		Reports: reports, Signer: signer, Archive: archive, DQ: dqStore, DQMaxAge: cfg.DQMaxAge,
-		MetadataChanged: func() { syncer.Trigger() },
+		MetadataChanged: func() { syncer.Trigger() }, Cache: resultCache, Quota: quotas,
 	})
 	if err != nil {
 		return err
@@ -245,6 +260,17 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}
 	}
 
+	shutdownTracing, err := newTracing(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		sctx, scancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second) // ctx sudah dibatalkan saat shutdown
+		defer scancel()
+		if terr := shutdownTracing(sctx); terr != nil { // span hilang ≠ shutdown gagal
+			log.Warn("tracing flush failed on shutdown", "err", terr)
+		}
+	}()
 	log.Info("starting", "version", version.Version, "database", cfg.DatabaseFilename, "query_timeout", cfg.QueryTimeout.String(),
 		"max_concurrent", cfg.MaxConcurrent, "queue_size", cfg.QueueSize, "rate_limit", cfg.RateLimit)
 	ctx, cancel := context.WithCancel(ctx)
@@ -258,6 +284,7 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 			Health:  health,
 			Drain:   server.DrainTimeout,
 			Actions: actions(adminOpts, srv),
+			Tracing: cfg.OTelEndpoint != "",
 		}, log)
 		cancel()
 	}()
@@ -380,6 +407,32 @@ func newArchive(ctx context.Context, cfg config.Config, log *slog.Logger) (objst
 	return nil, nil
 }
 
+// newTracing memasang tracer provider OTLP gRPC global bila --otel-endpoint
+// diset; selain itu no-op. Hasil: fungsi shutdown (flush span tersisa).
+func newTracing(ctx context.Context, cfg config.Config) (func(context.Context) error, error) {
+	if cfg.OTelEndpoint == "" {
+		return func(context.Context) error { return nil }, nil
+	}
+	opts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.OTelEndpoint)}
+	if cfg.OTelInsecure {
+		opts = append(opts, otlptracegrpc.WithInsecure())
+	}
+	exp, err := otlptracegrpc.New(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("main.newTracing: %w", err)
+	}
+	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(
+		attribute.String("service.name", "karhutlasql"), attribute.String("service.version", version.Version)))
+	if err != nil {
+		return nil, fmt.Errorf("main.newTracing: %w", err)
+	}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res),
+		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.OTelSampleRatio))))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	return tp.Shutdown, nil
+}
+
 func newPolicy(cfg config.Config, log *slog.Logger, gate *approval.Gate) (*authz.Store, error) {
 	if cfg.PolicyFile == "" {
 		log.Warn("no policy file: only the local user is allowed, as admin (dev only)", "user", cfg.Username)
@@ -436,6 +489,7 @@ func actions(o admin.Options, srv *flightsql.Server) map[string]func(context.Con
 	for _, typ := range []string{flightsql.ActionDQSnapshot, flightsql.ActionDQPublish} {
 		out[typ] = func(ctx context.Context, body []byte) ([]byte, error) { return srv.DQAction(ctx, typ, body) }
 	}
+	out[flightsql.ActionPIIAccess] = srv.PIIAccessAction
 	return out
 }
 

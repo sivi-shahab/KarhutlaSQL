@@ -33,6 +33,8 @@ const (
 	// Data quality & katalog (Fase 6c).
 	DQPublished = "dq_published"
 	CatalogSync = "catalog_sync"
+	// Hak akses subjek data (Fase 8b): Object = hash subject_id.
+	PIIAccessQuery = "pii_access_query"
 )
 
 // Event satu baris audit (JSON). Field kosong dihilangkan.

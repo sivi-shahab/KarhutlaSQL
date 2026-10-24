@@ -113,8 +113,89 @@ tercatat di audit `access_history_export`):
 Kolom dihitung dari plan logis teroptimasi DuckDB (`json_serialize_plan`):
 kolom filter ikut, kolom yang tidak dibaca tidak. Statement ber-parameter
 memakai plan fisik (kolom filter yang di-pushdown ke scan bisa terlewat).
-Access history mencatat kolom, bukan baris: "siapa membaca NIK nasabah X"
-dijawab lewat tabel/kolom + waktu + row filter, bukan per subjek data.
+Access history mencatat kolom, bukan baris; pertanyaan "siapa membaca data
+nasabah X" dijawab `audit.pii_access` di bawah.
+
+## Hak akses subjek data — `audit.pii_access` (UU PDP)
+
+DoAction `audit.pii_access` (role `dpo` atau admin) dengan body
+`{"subject_id": "3171…", "from": "2026-10-01", "to": "2026-10-31"}`
+mengembalikan statement yang **mungkin** membaca kolom bertag milik subjek
+itu: dari access history, untuk tabel yang punya kolom pengenal subjek di
+`classification.yaml`:
+
+```yaml
+subjects:
+  warehouse.main.nasabah: nik      # tabel → kolom pengenal subjek data
+```
+
+Tiap entri: waktu, `request_id`, user, tabel, kolom bertag yang dibaca →
+mask yang berlaku (`unmasked` = nilai mentah terlihat), row filter, dan
+`match`:
+
+| `match` | Arti |
+|---|---|
+| `unfiltered` | tabel dibaca tanpa row filter |
+| `row_filter_matches` | baris subjek lolos row filter pembaca |
+| `subject_not_found` | subjek tidak ada di data saat ini (dicantumkan konservatif) |
+| `filter_unevaluable` | row filter gagal dievaluasi (dicantumkan) |
+
+Akses ber-row filter yang tidak mencakup baris subjek tidak dicantumkan.
+WHERE milik query pembaca tidak dianalisis, jadi daftar ini superset
+(konservatif); row filter dievaluasi terhadap data saat ini. `subject_id`
+tidak pernah dicatat mentah: audit `pii_access_query` hanya menyimpan
+16 hex pertama sha256-nya.
+
+## Kuota & chargeback per tim
+
+Policy `quotas` (lihat [policy](policy.md#kuota-per-tim)) membatasi
+pemakaian per tim per jendela waktu; pemakaian semua tim dihitung untuk
+chargeback walau tanpa batas:
+
+```sql
+SELECT * FROM karhutla_chargeback();
+-- team | window_start | queries | exec_seconds | rows | bytes | total_queries | total_exec_seconds | total_rows | total_bytes
+```
+
+Admin melihat semua tim, user lain hanya timnya. Penghitung di memori per
+instance (jendela berjalan direset saat restart); untuk laporan bulanan pakai
+metrics kumulatif `karhutla_team_{queries,exec_seconds,rows,bytes}_total{team}`,
+mis. `sum by (team) (increase(karhutla_team_exec_seconds_total[30d]))` di
+Grafana (semua instance dijumlahkan).
+
+## Tracing (OpenTelemetry)
+
+`--otel-endpoint collector:4317` mengirim trace OTLP gRPC (`--otel-insecure`
+untuk dev, header auth lewat env `OTEL_EXPORTER_OTLP_HEADERS`,
+`--otel-sample-ratio` untuk trace baru). Setiap RPC gRPC menjadi span (konteks
+`traceparent` dari klien diteruskan); di dalamnya span `statement` dengan
+anak `authorize` dan `queue`. Atribut: `karhutla.request_id` (sama dengan
+audit), `enduser.id`, `karhutla.kind`, `karhutla.sql_sha256`,
+`karhutla.resource_group`, `karhutla.status`, `karhutla.rows`,
+`karhutla.bytes`, `karhutla.result_cache_hit`. Teks SQL dan nilai data tidak
+pernah masuk span.
+
+## Result cache
+
+`--result-cache-ttl 60s` (default mati) menyimpan hasil SELECT sebagai Arrow
+IPC di memori (LRU, `--result-cache-max-bytes` 256 MB total,
+`--result-cache-max-entry-bytes` 20 MB per hasil):
+
+- **Per identitas** dan atas SQL yang benar-benar dieksekusi setelah
+  governance (mask, row filter dengan nilai claim, LIMIT profil), jadi
+  perubahan policy, classification, atau claim otomatis meleset. Izin tetap
+  diperiksa setiap statement, access history dan audit tetap tercatat
+  (`statement_end.detail = result_cache_hit`).
+- **Invalidasi**: kunci memuat snapshot DuckLake tiap catalog yang dibaca
+  (tulis dari instance lain ikut terlihat) dan penghitung statement non-SELECT
+  instance ini untuk catalog DuckDB lokal.
+- **Tidak di-cache**: fungsi volatil (`random()`, `now()`, `current_date`,
+  window function — juga di dalam view), table function selain
+  `range`/`generate_series`/`unnest`, catalog eksternal (postgres, sqlite,
+  file), hasil yang terpotong (klien putus, batas byte role).
+- Hit tetap melewati antrean resource group (slot dilepas segera).
+  Metrics: `karhutla_result_cache_operations_total{op}`,
+  `karhutla_result_cache_bytes`. Cache per instance, tidak dibagi.
 
 ## Admin lewat Flight DoAction (G-12)
 
@@ -130,6 +211,7 @@ Body & hasil JSON; semua butuh role admin kecuali `health`:
 | `approve_policy` | `{"document": "…", "hash": "…"}` |
 | `dq_snapshot` *(role `dq_runner`)* | `{"table": "c.s.t"}` → `{"table","snapshot_id"}` |
 | `dq_publish` *(role `dq_runner`)* | `{"table","snapshot_id","result": <Validation Result GX>}` |
+| `audit.pii_access` *(role `dpo` / admin)* | `{"subject_id","from","to"}` → daftar akses (lihat di atas) |
 
 ```python
 import json, pyarrow.flight as fl

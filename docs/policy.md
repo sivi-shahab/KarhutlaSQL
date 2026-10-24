@@ -134,6 +134,24 @@ bucket, 0 = mati) menghitung setiap RPC — satu query Flight SQL = 2 RPC
 (GetFlightInfo + DoGet). Lewat batas → `RESOURCE_EXHAUSTED`
 ("rate limit exceeded").
 
+## Kuota per tim
+
+```yaml
+quotas:
+  team_claim: department     # claim token → nama tim; tanpa claim (termasuk user lokal) → tim "default"
+  interval: 24h              # jendela tetap, mulai kelipatan interval sejak epoch (24h = tengah malam UTC)
+  teams:
+    risk:    { max_queries: 5000, max_exec_seconds: 7200, max_bytes: 50000000000 }
+    default: { max_queries: 1000 }   # juga untuk tim yang tidak terdaftar
+```
+
+Batas (`max_queries`, `max_exec_seconds`, `max_rows`, `max_bytes`; 0 = tanpa
+batas) dicek sebelum eksekusi: bila pemakaian tim di jendela berjalan sudah
+mencapai batas → `RESOURCE_EXHAUSTED` ("quota exceeded"). Statement yang
+sedang berjalan boleh melewati batas. Query kontrol admin (kill/monitoring)
+tidak terkena kuota. Penghitung per instance, reset saat restart; pemakaian
+untuk chargeback: [monitoring](monitoring.md#kuota-chargeback-per-tim).
+
 ## Four-eyes (G-11)
 
 Dengan `--policy-file`/`--classification-file` dan `--four-eyes` (default

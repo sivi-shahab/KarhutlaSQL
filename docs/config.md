@@ -42,6 +42,9 @@ flag `*-file` menunjuk file (kunci privat wajib 0600).
 | `--oidc-groups-claim` | `KARHUTLASQL_OIDC_GROUPS_CLAIM` | `groups` | claim grup OIDC |
 | `--oidc-issuer` | `KARHUTLASQL_OIDC_ISSUER` | — | issuer OIDC (Keycloak/Entra/Okta); kosong = OIDC mati |
 | `--oidc-username-claim` | `KARHUTLASQL_OIDC_USERNAME_CLAIM` | `preferred_username` | claim nama user OIDC (fallback sub) |
+| `--otel-endpoint` | `KARHUTLASQL_OTEL_ENDPOINT` | — | collector OTLP gRPC (host:port) untuk tracing OpenTelemetry; header auth lewat env OTEL_EXPORTER_OTLP_HEADERS; kosong = mati |
+| `--otel-insecure` | `KARHUTLASQL_OTEL_INSECURE` | `false` | OTLP tanpa TLS (dev) |
+| `--otel-sample-ratio` | `KARHUTLASQL_OTEL_SAMPLE_RATIO` | `1` | rasio sampling trace baru (0..1); trace dari klien mengikuti keputusan induk |
 | `--password-env` | `KARHUTLASQL_PASSWORD_ENV` | `KARHUTLASQL_PASSWORD` | nama env var berisi password (plaintext atau hash bcrypt) |
 | `--policy-file` | `KARHUTLASQL_POLICY_FILE` | — | policy YAML (spec §5.3); kosong = hanya user lokal sebagai admin (dev). Reload: SIGHUP |
 | `--port` | `KARHUTLASQL_PORT` | `31337` | port gRPC Flight SQL |
@@ -54,6 +57,9 @@ flag `*-file` menunjuk file (kunci privat wajib 0600).
 | `--rate-limit` | `KARHUTLASQL_RATE_LIMIT` | `0` | request RPC per detik per user (token bucket); 0 = mati |
 | `--report-signing-key-file` | `KARHUTLASQL_REPORT_SIGNING_KEY_FILE` | — | kunci privat Ed25519 PKCS#8 PEM (0600) penanda tangan manifest report |
 | `--reports-file` | `KARHUTLASQL_REPORTS_FILE` | — | definisi report (reports.yaml) untuk karhutla_report_run() |
+| `--result-cache-max-bytes` | `KARHUTLASQL_RESULT_CACHE_MAX_BYTES` | `268435456` | batas total byte result cache (LRU) |
+| `--result-cache-max-entry-bytes` | `KARHUTLASQL_RESULT_CACHE_MAX_ENTRY_BYTES` | `20971520` | hasil lebih besar dari ini tidak di-cache |
+| `--result-cache-ttl` | `KARHUTLASQL_RESULT_CACHE_TTL` | `0s` | umur hasil SELECT di result cache (per identitas, invalidasi saat data berubah); 0 = mati |
 | `--session-idle-timeout` | `KARHUTLASQL_SESSION_IDLE_TIMEOUT` | `1h0m0s` | sesi tanpa aktivitas dibuang dari registry (statement/prepared handle-nya ikut hilang) |
 | `--slow-query-threshold` | `KARHUTLASQL_SLOW_QUERY_THRESHOLD` | `10s` | eksekusi (di luar antre) selama ini dicatat ke log slow_query; 0 = mati |
 | `--state-dir` | `KARHUTLASQL_STATE_DIR` | — | direktori state server (persetujuan policy, 0700); default <dir database>/karhutlasql-state |

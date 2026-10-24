@@ -48,3 +48,8 @@ SELECT * FROM memory.main.other
 -- out
 SELECT * FROM memory.main.other
 
+-- in
+SELECT * FROM warehouse.nasabah AT (VERSION => 1)
+-- out
+SELECT * FROM (SELECT 'x' AS nik FROM warehouse.main.nasabah AT (VERSION => 1) WHERE ('N0' = 'N0')) AS nasabah
+

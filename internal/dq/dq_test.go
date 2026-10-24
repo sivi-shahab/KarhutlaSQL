@@ -163,4 +163,19 @@ func TestStoreGate(t *testing.T) {
 	if got := s2.All(); len(got) != 3 || got[0].ID != good.ID || !got[0].ValidatedAt.Equal(good.ValidatedAt) || got[0].RunBy != "oidc:gx" {
 		t.Errorf("reload = %+v", got)
 	}
+	// Instance lain (arsip bersama): publish di s terlihat di s2 setelah Refresh.
+	v, err := s.Publish(ctx, Validation{Table: "w.main.b", SnapshotID: "s9", Success: true, RunBy: "oidc:gx", Results: "[]"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2.now = s.now
+	if err := s2.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Refresh(ctx); err != nil { // objek sendiri tidak dimuat dua kali
+		t.Fatal(err)
+	}
+	if ids, err := s2.Gate(map[string]string{"w.main.b": "s9"}, 2*time.Hour, "oidc:dian"); err != nil || ids[0] != v.ID || len(s2.All()) != 4 || len(s.All()) != 4 {
+		t.Errorf("refresh: %v %v, %d/%d validations", ids, err, len(s2.All()), len(s.All()))
+	}
 }

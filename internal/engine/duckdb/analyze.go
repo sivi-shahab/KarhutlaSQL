@@ -102,15 +102,25 @@ func (e *Engine) Analyze(ctx context.Context, query string) (engine.Analysis, er
 	if err != nil {
 		return engine.Analysis{}, wrap("duckdb.Analyze", err)
 	}
+	// DUCKLAKE_SCAN menulis nama tabel tanpa catalog/schema di EXPLAIN;
+	// nama lengkapnya diambil dari plan terserialisasi (ADR 35).
+	var lake map[string][]string
+	for _, p := range plans {
+		if strings.Contains(p[1], `"DUCKLAKE_SCAN"`) {
+			lake = lakeTables(ctx, c, query)
+			break
+		}
+	}
 	for _, p := range plans { // (explain_key, explain_value)
 		var nodes []planNode
 		if err := json.Unmarshal([]byte(p[1]), &nodes); err != nil {
 			return engine.Analysis{}, fmt.Errorf("duckdb.Analyze: plan: %w", err)
 		}
 		for _, n := range nodes {
-			walk(&a, n, nil, p[0] == "logical_plan")
+			w := walker{a: &a, lake: lake, logical: p[0] == "logical_plan"}
+			w.walk(n, nil, false)
 			if p[0] == "physical_plan" {
-				columns(&a, n)
+				columns(&a, n, lake)
 			}
 		}
 	}
@@ -126,7 +136,7 @@ func (e *Engine) Analyze(ctx context.Context, query string) (engine.Analysis, er
 // statistik) memakai kolom yang direferensikan binder (plan tanpa optimasi).
 // Gagal (sintaks yang tidak didukung) → Columns dari plan fisik tetap.
 func boundColumns(ctx context.Context, c *duckdbdrv.Conn, query string, a *engine.Analysis) {
-	opt, ok := planColumns(ctx, c, query, true)
+	opt, _, ok := planColumns(ctx, c, query, true)
 	if !ok {
 		return
 	}
@@ -136,7 +146,7 @@ func boundColumns(ctx context.Context, c *duckdbdrv.Conn, query string, a *engin
 			continue
 		}
 		if raw == nil {
-			if raw, ok = planColumns(ctx, c, query, false); !ok {
+			if raw, _, ok = planColumns(ctx, c, query, false); !ok {
 				return
 			}
 		}
@@ -153,20 +163,41 @@ func boundColumns(ctx context.Context, c *duckdbdrv.Conn, query string, a *engin
 	}
 }
 
-// planColumns tabel → kolom setiap LOGICAL_GET di json_serialize_plan.
-func planColumns(ctx context.Context, c *duckdbdrv.Conn, query string, optimize bool) (map[string][]string, bool) {
+// lakeTables nama tabel → nama lengkap "catalog.schema.table" setiap scan
+// DuckLake di plan logis (dengan dan tanpa optimasi); nil bila plan tidak bisa
+// diserialisasi (scan tetap tak terselesaikan → fail-closed).
+func lakeTables(ctx context.Context, c *duckdbdrv.Conn, query string) map[string][]string {
+	out := map[string][]string{}
+	for _, optimize := range []bool{false, true} {
+		_, lake, ok := planColumns(ctx, c, query, optimize)
+		if !ok {
+			return nil
+		}
+		for _, t := range lake {
+			list := out[t[strings.LastIndexByte(t, '.')+1:]]
+			addUnique(&list, t)
+			out[t[strings.LastIndexByte(t, '.')+1:]] = list
+		}
+	}
+	return out
+}
+
+// planColumns tabel → kolom setiap LOGICAL_GET di json_serialize_plan, plus
+// daftar tabel yang dibaca lewat ducklake_scan.
+func planColumns(ctx context.Context, c *duckdbdrv.Conn, query string, optimize bool) (map[string][]string, []string, bool) {
 	rows, err := queryRows(ctx, c, "SELECT json_serialize_plan($1::VARCHAR, optimize := $2::BOOLEAN)::VARCHAR", []any{query, optimize})
 	if err != nil || len(rows) != 1 {
-		return nil, false
+		return nil, nil, false
 	}
 	var root struct {
 		Error bool `json:"error"`
 		Plans any  `json:"plans"`
 	}
 	if json.Unmarshal([]byte(rows[0][0]), &root) != nil || root.Error {
-		return nil, false
+		return nil, nil, false
 	}
 	cols := map[string][]string{}
+	var lake []string
 	var visit func(v any)
 	visit = func(v any) {
 		switch x := v.(type) {
@@ -177,13 +208,19 @@ func planColumns(ctx context.Context, c *duckdbdrv.Conn, query string, optimize 
 		case map[string]any:
 			if x["type"] == "LOGICAL_GET" {
 				fd, _ := x["function_data"].(map[string]any)
-				cat, _ := fd["catalog"].(string)
-				sch, _ := fd["schema"].(string)
-				tbl, _ := fd["table"].(string)
+				key := func(k string) string { v, _ := fd[k].(string); return v }
+				cat, sch, tbl := key("catalog"), key("schema"), key("table")
+				isLake := x["name"] == "ducklake_scan"
+				if isLake {
+					cat, sch, tbl = key("catalog_name"), key("schema_name"), key("table_name")
+				}
 				names, _ := x["names"].([]any)
 				idx, _ := x["column_indexes"].([]any)
 				if cat != "" && sch != "" && tbl != "" {
 					t := strings.ToLower(cat + "." + sch + "." + tbl)
+					if isLake {
+						addUnique(&lake, t)
+					}
 					list := cols[t]
 					for _, ci := range idx {
 						m, _ := ci.(map[string]any)
@@ -203,17 +240,44 @@ func planColumns(ctx context.Context, c *duckdbdrv.Conn, query string, optimize 
 		}
 	}
 	visit(root.Plans)
-	return cols, true
+	return cols, lake, true
 }
 
-// walk mengumpulkan catalog/tabel/fungsi; scan di plan logis pra-optimasi
-// dicatat beserta ekspresi FILTER induk langsungnya (verifikasi rewrite).
-func walk(a *engine.Analysis, n planNode, parent *planNode, logical bool) {
+// walker mengumpulkan catalog/tabel/fungsi dari satu plan EXPLAIN.
+type walker struct {
+	a       *engine.Analysis
+	lake    map[string][]string // lihat lakeTables
+	logical bool
+}
+
+// lakeWrites operator tulis DuckLake. COPY_TO_FILE di bawahnya adalah
+// penulisan file data ke DATA_PATH catalog (dibatasi allowed_directories),
+// bukan COPY milik pengguna (statement COPY tidak di-EXPLAIN).
+var lakeWrites = map[string]bool{"DUCKLAKE_INSERT": true, "DUCKLAKE_UPDATE": true, "DUCKLAKE_DELETE": true,
+	"DUCKLAKE_CREATE_TABLE_AS": true, "DUCKLAKE_INLINE_DATA": true}
+
+// tableName nama "catalog.schema.table" dari extra_info Table; scan DuckLake
+// diselesaikan lewat lake bila tepat satu kandidat (ambigu → tetap pendek →
+// ditolak di walk).
+func tableName(n planNode, table string, lake map[string][]string) string {
+	table = normTable(table)
+	if n.Name == "DUCKLAKE_SCAN" && !strings.Contains(table, ".") {
+		if l := lake[table]; len(l) == 1 {
+			return l[0]
+		}
+	}
+	return table
+}
+
+// walk scan di plan logis pra-optimasi dicatat beserta ekspresi FILTER induk
+// langsungnya (verifikasi rewrite).
+func (w walker) walk(n planNode, parent *planNode, inLakeWrite bool) {
+	a := w.a
 	switch table, _ := n.ExtraInfo["Table"].(string); {
 	case table != "":
-		table = normTable(table)
+		table = tableName(n, table, w.lake)
 		addUnique(&a.Tables, table)
-		if logical {
+		if w.logical {
 			sc := engine.Scan{Table: table}
 			if parent != nil && parent.Name == "FILTER" {
 				sc.ParentFilter = exprText(parent.ExtraInfo["Expressions"])
@@ -232,11 +296,14 @@ func walk(a *engine.Analysis, n planNode, parent *planNode, logical bool) {
 		if !matched { // tidak terduga: laporkan sebagai fungsi agar ditolak
 			addUnique(&a.Functions, "UNRESOLVED_TABLE:"+table)
 		}
+	case lakeWrites[n.Name]:
+		inLakeWrite = true
+	case n.Name == "COPY_TO_FILE" && inLakeWrite:
 	case !operators[n.Name]:
 		addUnique(&a.Functions, n.Name)
 	}
 	for _, c := range n.Children {
-		walk(a, c, &n, logical)
+		w.walk(c, &n, inLakeWrite)
 	}
 }
 
@@ -269,7 +336,7 @@ func normTable(s string) string {
 }
 
 // columns mencatat Projections setiap scan tabel di plan fisik.
-func columns(a *engine.Analysis, n planNode) {
+func columns(a *engine.Analysis, n planNode, lake map[string][]string) {
 	if table, _ := n.ExtraInfo["Table"].(string); table != "" {
 		var cols []string
 		switch p := n.ExtraInfo["Projections"].(type) {
@@ -284,7 +351,7 @@ func columns(a *engine.Analysis, n planNode) {
 				}
 			}
 		}
-		table = normTable(table)
+		table = tableName(n, table, lake)
 		for _, c := range cols {
 			if a.Columns == nil {
 				a.Columns = map[string][]string{}
@@ -295,7 +362,7 @@ func columns(a *engine.Analysis, n planNode) {
 		}
 	}
 	for _, c := range n.Children {
-		columns(a, c)
+		columns(a, c, lake)
 	}
 }
 

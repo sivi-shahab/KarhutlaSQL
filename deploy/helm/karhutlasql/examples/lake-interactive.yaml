@@ -1,0 +1,6 @@
+# Kelas interactive: banyak query kecil, batas waktu pendek.
+queryTimeout: 120
+scheduler: { maxConcurrent: 16, queueSize: 128, queueTimeout: 30s }
+resources:
+  requests: { cpu: "4", memory: 8Gi }
+  limits: { memory: 8Gi }

@@ -18,6 +18,7 @@ nav:
   - Policy & governance: policy.md
   - Monitoring: monitoring.md
   - Report run: reports.md
+  - DuckLake multi-writer: ducklake.md
   - Data quality: data-quality.md
   - Unity Catalog: catalog.md
   - Kubernetes: deploy-k8s.md

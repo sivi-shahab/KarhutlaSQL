@@ -1,0 +1,17 @@
+# DuckLake bersama (ADR 35): satu release per kelas beban, semua memakai file
+# ini + file kelasnya, mis.
+#   helm install kq-interactive deploy/helm/karhutlasql -f lake-common.yaml -f lake-interactive.yaml
+#   helm install kq-batch       deploy/helm/karhutlasql -f lake-common.yaml -f lake-batch.yaml
+# Policy, classification, reports, arsip, dan OIDC sama di semua kelas
+# (control plane satu); hanya sumber daya & scheduler yang berbeda.
+image: { repository: karhutlasql, tag: dev-lake }
+auth: { existingSecret: karhutlasql-auth }
+ducklake:
+  catalog: lake
+  metadata: "host=lake-postgres dbname=lake user=karhutla"
+  dataPath: s3://lake/data/
+  s3: { endpoint: "minio:9000", useSSL: false }
+  existingSecret: karhutlasql-lake
+archive:
+  s3: { endpoint: "minio:9000", bucket: karhutla-archive, insecure: true }
+  existingSecret: karhutlasql-archive

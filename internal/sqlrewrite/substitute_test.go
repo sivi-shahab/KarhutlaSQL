@@ -44,6 +44,7 @@ func TestSubstitute_Golden(t *testing.T) {
 		{"WITH nasabah AS (SELECT 1 AS nik) SELECT * FROM nasabah", 0}, // CTE, bukan tabel
 		{"SELECT * FROM warehouse.nasabah t(a)", 1},
 		{"SELECT * FROM memory.main.other", 0},
+		{"SELECT * FROM warehouse.nasabah AT (VERSION => 1)", 1}, // AT pindah ke scan di subquery
 	}
 	var golden strings.Builder
 	for _, c := range cases {
@@ -71,10 +72,33 @@ func TestSubstitute_Golden(t *testing.T) {
 	for _, bad := range []string{
 		"PIVOT warehouse.nasabah ON nik USING count(*)",
 		"INSERT INTO x SELECT * FROM warehouse.nasabah",
-		"SELECT * FROM warehouse.nasabah AT (VERSION => 1)",
 	} {
 		if _, _, err := Substitute(context.Background(), e, bad, names, subs); !errors.Is(err, ErrRewrite) {
 			t.Errorf("%s: err = %v, want ErrRewrite", bad, err)
 		}
+	}
+}
+
+func TestTimeTravel(t *testing.T) {
+	e := codec(t)
+	ctx := context.Background()
+	cases := map[string]string{
+		"SELECT * FROM lake.kredit k JOIN lake.s.nasabah USING (id)": "SELECT * FROM lake.kredit AS k AT (VERSION => 7) INNER JOIN lake.s.nasabah AT (VERSION => 7) USING (id)",
+		"WITH c AS (SELECT * FROM lake.kredit) SELECT * FROM c":      "WITH c AS (SELECT * FROM lake.kredit AT (VERSION => 7))SELECT * FROM c",
+		"SELECT 1 WHERE EXISTS (SELECT 1 FROM t)":                    "SELECT 1 WHERE EXISTS(SELECT 1 FROM t AT (VERSION => 7))",
+	}
+	for in, want := range cases {
+		got, err := TimeTravel(ctx, e, in, "VERSION => 7")
+		if err != nil || got != want {
+			t.Errorf("%s:\n got %q, %v\nwant %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"SELECT * FROM t AT (VERSION => 1)", "SELECT 1; SELECT 2"} {
+		if _, err := TimeTravel(ctx, e, bad, "VERSION => 7"); !errors.Is(err, ErrRewrite) {
+			t.Errorf("%s: err = %v, want ErrRewrite", bad, err)
+		}
+	}
+	if _, err := TimeTravel(ctx, e, "SELECT 1 FROM t", "VERSION => 1) UNION SELECT 2 FROM (t"); !errors.Is(err, ErrRewrite) {
+		t.Errorf("injected AT: err = %v, want ErrRewrite", err)
 	}
 }

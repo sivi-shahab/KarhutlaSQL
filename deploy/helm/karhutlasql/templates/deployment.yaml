@@ -1,5 +1,9 @@
 {{- $secret := required "auth.existingSecret is required" .Values.auth.existingSecret -}}
 {{- if and .Values.oidc.issuer (not .Values.policy) }}{{ fail "oidc.issuer requires policy (allowlist & roles)" }}{{ end -}}
+{{- $lake := .Values.ducklake -}}
+{{- $config := or .Values.policy .Values.classification .Values.reports $lake.catalog -}}
+{{- $allowed := .Values.allowedDirectories -}}
+{{- if $lake.catalog }}{{ $allowed = append $allowed $lake.dataPath }}{{ end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,7 +22,7 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9090"
         prometheus.io/scheme: https # port admin ikut TLS server
-        checksum/policy: {{ printf "%s%s%s" .Values.policy .Values.classification .Values.reports | sha256sum }}
+        checksum/policy: {{ printf "%s%s%s%s" .Values.policy .Values.classification .Values.reports (toJson $lake) | sha256sum }}
     spec:
       securityContext:
         runAsNonRoot: true
@@ -104,8 +108,12 @@ spec:
             - --uc-advertised-endpoint={{ . }}
             {{- end }}
             {{- end }}
-            {{- with .Values.allowedDirectories }}
+            {{- with $allowed }}
             - --allowed-directories={{ join "," . }}
+            {{- end }}
+            {{- if $lake.catalog }}
+            - --init-sql-file=/etc/karhutlasql/init.sql
+            - --duckdb-secrets-file=/etc/karhutlasql/secrets.yaml
             {{- end }}
             {{- with .Values.oidc.issuer }}
             - --oidc-issuer={{ . }}
@@ -132,6 +140,18 @@ spec:
               valueFrom:
                 secretKeyRef: { name: {{ .Values.archive.existingSecret }}, key: secret-key }
             {{- end }}
+            {{- if $lake.catalog }}
+            {{- $ls := required "ducklake.existingSecret is required" $lake.existingSecret }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ $ls }}, key: pg-password }
+            - name: KARHUTLASQL_LAKE_KEY_ID
+              valueFrom:
+                secretKeyRef: { name: {{ $ls }}, key: s3-key-id }
+            - name: KARHUTLASQL_LAKE_SECRET
+              valueFrom:
+                secretKeyRef: { name: {{ $ls }}, key: s3-secret }
+            {{- end }}
             {{- with .Values.unityCatalog.existingSecret }}
             - name: KARHUTLASQL_UC_TOKEN
               valueFrom:
@@ -152,7 +172,7 @@ spec:
           resources: {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - { name: data, mountPath: /data }
-            {{- if or .Values.policy .Values.classification .Values.reports }}
+            {{- if $config }}
             - { name: policy, mountPath: /etc/karhutlasql, readOnly: true }
             {{- end }}
             {{- if .Values.reportSigning.existingSecret }}
@@ -163,7 +183,7 @@ spec:
             {{- end }}
       terminationGracePeriodSeconds: 40 # drain gRPC ≤ 30s
       volumes:
-        {{- if or .Values.policy .Values.classification .Values.reports }}
+        {{- if $config }}
         - name: policy
           configMap: { name: {{ include "karhutlasql.fullname" . }}-policy }
         {{- end }}

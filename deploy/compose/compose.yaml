@@ -5,6 +5,11 @@
 # Unity Catalog OSS (Fase 6c, profile uc): jalankan server dengan
 #   --uc-endpoint http://unity-catalog:8080
 #   docker compose -f deploy/compose/compose.yaml --profile uc up -d unity-catalog
+# DuckLake multi-writer (Fase 8a, profile lake): dua instance (interactive,
+# batch) menulis ke lake yang sama (catalog Postgres + data MinIO).
+#   make docker-lake
+#   export LAKE_PG_PASSWORD=... LAKE_S3_KEY_ID=... LAKE_S3_SECRET=...
+#   docker compose -f deploy/compose/compose.yaml --profile lake up -d lake-interactive lake-batch
 services:
   server:
     image: karhutlasql:dev
@@ -33,5 +38,62 @@ services:
     profiles: [uc]
     ports: ["127.0.0.1:8080:8080"]
 
+  lake-postgres:
+    image: postgres:17-alpine
+    profiles: [lake]
+    environment:
+      POSTGRES_DB: lake
+      POSTGRES_USER: karhutla
+      POSTGRES_PASSWORD: ${LAKE_PG_PASSWORD:?set LAKE_PG_PASSWORD}
+    volumes: ["lake-pg:/var/lib/postgresql/data"]
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "karhutla", "-d", "lake"], interval: 2s, retries: 30 }
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    profiles: [lake]
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${LAKE_S3_KEY_ID:?set LAKE_S3_KEY_ID}
+      MINIO_ROOT_PASSWORD: ${LAKE_S3_SECRET:?set LAKE_S3_SECRET}
+    volumes: ["lake-s3:/data"]
+
+  minio-init:
+    image: cgr.dev/chainguard/minio-client:latest
+    profiles: [lake]
+    command: ["mb", "--ignore-existing", "m/lake"]
+    restart: on-failure # sampai MinIO siap
+    environment:
+      MC_HOST_m: http://${LAKE_S3_KEY_ID}:${LAKE_S3_SECRET}@minio:9000
+    depends_on: [minio]
+
+  lake-interactive: &lake-server
+    image: karhutlasql:dev-lake
+    profiles: [lake]
+    command: ["--database-filename", ":memory:", "--username", "admin", "--tls-self-signed",
+              "--init-sql-file", "/cfg/init.sql", "--duckdb-secrets-file", "/cfg/secrets.yaml",
+              "--allowed-directories", "s3://lake/data/", "--max-concurrent", "16", "--query-timeout", "120"]
+    environment: &lake-env
+      KARHUTLASQL_PASSWORD: ${KARHUTLASQL_PASSWORD:?set KARHUTLASQL_PASSWORD}
+      PGPASSWORD: ${LAKE_PG_PASSWORD}
+      KARHUTLASQL_LAKE_KEY_ID: ${LAKE_S3_KEY_ID}
+      KARHUTLASQL_LAKE_SECRET: ${LAKE_S3_SECRET}
+    volumes: ["./lake:/cfg:ro"]
+    ports: ["31337:31337"]
+    # Dua instance yang menginisialisasi catalog DuckLake kosong bersamaan:
+    # satu gagal (DDL Postgres bentrok) lalu attach ulang setelah restart.
+    restart: on-failure
+    depends_on:
+      lake-postgres: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+
+  lake-batch:
+    <<: *lake-server
+    command: ["--database-filename", ":memory:", "--username", "admin", "--tls-self-signed",
+              "--init-sql-file", "/cfg/init.sql", "--duckdb-secrets-file", "/cfg/secrets.yaml",
+              "--allowed-directories", "s3://lake/data/", "--max-concurrent", "2", "--query-timeout", "3600"]
+    ports: ["31338:31337"]
+
 volumes:
   data: {}
+  lake-pg: {}
+  lake-s3: {}

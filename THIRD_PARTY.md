@@ -39,6 +39,16 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | golang.org/x/crypto/ed25519 (stdlib `crypto/ed25519`) | BSD-3-Clause | Tanda tangan manifest report |
 | github.com/zalando/go-keyring | MIT | *(belum dipakai)* token store keyring klien (E-10); Fase 5 memakai file 0600 |
 
+## Ekstensi DuckDB (image varian `lake`, Fase 8a)
+
+Diunduh dari `extensions.duckdb.org` saat `make docker-lake` (bukan Go module, tidak di-link ke binary statis).
+
+| Ekstensi | Lisensi | Kegunaan |
+|---|---|---|
+| ducklake | MIT | Catalog DuckLake multi-writer + time travel (ADR 35) |
+| postgres_scanner (+ libpq terbundel, PostgreSQL License) | MIT | Metadata DuckLake di Postgres |
+| httpfs | MIT | File data DuckLake di S3/MinIO |
+
 ## Dev / test only
 
 | Tool | Lisensi | Kegunaan |
@@ -47,6 +57,8 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | goreleaser | MIT | Rilis |
 | ghcr.io/goreleaser/goreleaser-cross (image) | MIT | Cross-compiler CGO untuk rilis server |
 | gcr.io/distroless/static-debian12 (image) | Apache-2.0 | Base image runtime |
+| gcr.io/distroless/cc-debian12 (image) | Apache-2.0 | Base image varian `lake` (glibc + libstdc++, dlopen ekstensi) |
+| postgres:17-alpine (image) | PostgreSQL License | Catalog DuckLake di compose profile `lake` & integration test |
 | golang (image builder) | BSD-3-Clause | Build image |
 | busybox (image, init container Helm opsional) | GPL-2.0 (tidak di-link, proses terpisah) | Salin kunci TLS ke emptyDir 0600 |
 | kind | Apache-2.0 | Uji Helm lokal |

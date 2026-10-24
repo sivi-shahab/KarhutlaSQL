@@ -41,6 +41,7 @@ Jalannya:
    (`kind = report`).
 
 Manifest: `report_id`, `name`, `user`, waktu, `snapshot_id`, sidik per tabel,
+`lake_snapshots` (ID snapshot DuckLake per catalog sumber, bila ada), `as_of`,
 versi engine, SHA-256 SQL definisi & SQL yang dieksekusi, hasil assert,
 `dq_validation_ids` (ID validasi GX yang dipakai gate), file hasil (sha256, rows, bytes),
 `key_id` (16 hex pertama sha256 kunci publik).
@@ -56,6 +57,27 @@ karhutlasql-client --verify ./laporan/manifest.json --public-key report.pub
 # OK report <id> (slik_bulanan) by dian at …  → exit 0; tanda tangan/hash salah → exit 1
 ```
 
-Batas: hasil dibangun di memori server sebelum diunggah; snapshot DuckLake
-(`AT (VERSION => n)`) menyusul bersama DuckLake (Fase 8) — saat ini snapshot =
-transaksi + sidik isi tabel.
+## Time travel (DuckLake)
+
+Report yang hanya membaca tabel DuckLake bisa dijalankan ulang pada snapshot
+lampau, mis. untuk posisi akhir bulan atau membuktikan ulang laporan yang
+sudah dikirim:
+
+```sql
+CALL karhutla_report_run_at('slik_bulanan', '42');                     -- versi snapshot
+CALL karhutla_report_run_at('slik_bulanan', '2026-09-30T23:59:59+07:00'); -- waktu (RFC 3339)
+```
+
+Server menambahkan `AT (VERSION => n)` / `AT (TIMESTAMP => …)` ke setiap
+tabel di SQL report & assert **sebelum** otorisasi, sehingga masking/RLS
+pemanggil tetap berlaku (klausa AT dipindah ke scan di dalam subquery
+governance). Sidik tabel dihitung pada snapshot yang sama, jadi
+`snapshot_id` dan hasil identik dengan run asli bila datanya sama — DQ gate
+juga dinilai pada data snapshot itu. `as_of` dan `lake_snapshots` tercatat di
+manifest. Tabel non-DuckLake di report time travel → error; versi yang tidak
+ada / waktu sebelum snapshot pertama → `FAILED_PRECONDITION`. Topologi:
+[DuckLake multi-writer](ducklake.md).
+
+Batas: hasil dibangun di memori server sebelum diunggah; time travel memakai
+kolom tabel saat ini untuk subquery masking (kolom yang ditambah/dihapus
+setelah snapshot → error, bukan data salah).

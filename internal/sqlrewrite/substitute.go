@@ -50,29 +50,35 @@ func (n Names) Resolve(catalog, schema, table string) string {
 // bisa diserialisasi → ErrRewrite. Mengembalikan SQL hasil dan jumlah
 // substitusi. Kelengkapan substitusi diverifikasi pemanggil terhadap plan.
 func Substitute(ctx context.Context, codec Codec, sql string, names Names, subs map[string]string) (string, int, error) {
-	root, err := serialize(ctx, codec, sql)
+	r := &rewriter{ctx: ctx, codec: codec, names: names, subs: subs, nodes: map[string]map[string]any{}}
+	res, err := r.run(sql)
+	return res, r.count, err
+}
+
+// run serialisasi sql → walk → deserialisasi.
+func (r *rewriter) run(sql string) (string, error) {
+	root, err := serialize(r.ctx, r.codec, sql)
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
 	stmts, _ := root["statements"].([]any)
 	if len(stmts) != 1 {
-		return "", 0, fmt.Errorf("%w: %d statements", ErrRewrite, len(stmts))
+		return "", fmt.Errorf("%w: %d statements", ErrRewrite, len(stmts))
 	}
-	r := &rewriter{ctx: ctx, codec: codec, names: names, subs: subs, nodes: map[string]map[string]any{}}
 	out, err := r.walk(stmts[0], nil)
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
 	root["statements"] = []any{out}
 	b, err := json.Marshal(root)
 	if err != nil {
-		return "", 0, fmt.Errorf("%w: %w", ErrRewrite, err)
+		return "", fmt.Errorf("%w: %w", ErrRewrite, err)
 	}
-	res, err := codec.DeserializeSQL(ctx, string(b))
+	res, err := r.codec.DeserializeSQL(r.ctx, string(b))
 	if err != nil {
-		return "", 0, fmt.Errorf("%w: %w", ErrRewrite, err)
+		return "", fmt.Errorf("%w: %w", ErrRewrite, err)
 	}
-	return res, r.count, nil
+	return res, nil
 }
 
 func serialize(ctx context.Context, codec Codec, sql string) (map[string]any, error) {
@@ -98,6 +104,7 @@ type rewriter struct {
 	names Names
 	subs  map[string]string
 	nodes map[string]map[string]any // cache node SUBQUERY per tabel
+	at    any                       // TimeTravel: at_clause untuk setiap tabel (tanpa substitusi)
 	count int
 }
 
@@ -145,17 +152,35 @@ func (r *rewriter) table(ref map[string]any, scope []string) (any, error) {
 	if cat == "" && sch == "" && slices.Contains(scope, strings.ToLower(tbl)) {
 		return ref, nil // referensi CTE
 	}
+	if r.at != nil {
+		if ref["at_clause"] != nil {
+			return nil, fmt.Errorf("%w: %s already has AT", ErrRewrite, tbl)
+		}
+		ref["at_clause"] = deepCopyAny(r.at)
+		r.count++
+		return ref, nil
+	}
 	fqn := r.names.Resolve(cat, sch, tbl)
 	sub, ok := r.subs[fqn]
 	if !ok {
 		return ref, nil
 	}
-	if ref["at_clause"] != nil {
-		return nil, fmt.Errorf("%w: time travel (AT) on %s", ErrRewrite, fqn)
-	}
 	node, err := r.subquery(fqn, sub)
 	if err != nil {
 		return nil, err
+	}
+	if at := ref["at_clause"]; at != nil { // time travel: pindah ke scan di dalam subquery
+		n := 0
+		visitTables(node, func(t map[string]any) {
+			str := func(k string) string { s, _ := t[k].(string); return s }
+			if r.names.Resolve(str("catalog_name"), str("schema_name"), str("table_name")) == fqn {
+				t["at_clause"] = at
+				n++
+			}
+		})
+		if n == 0 {
+			return nil, fmt.Errorf("%w: time travel (AT) on %s", ErrRewrite, fqn)
+		}
 	}
 	alias := str("alias")
 	if alias == "" {
@@ -187,6 +212,43 @@ func (r *rewriter) subquery(fqn, sub string) (map[string]any, error) {
 	}
 	r.nodes[fqn] = from
 	return deepCopy(from), nil
+}
+
+// visitTables memanggil fn untuk setiap node BASE_TABLE di v.
+func visitTables(v any, fn func(map[string]any)) {
+	switch x := v.(type) {
+	case []any:
+		for _, e := range x {
+			visitTables(e, fn)
+		}
+	case map[string]any:
+		if x["type"] == "BASE_TABLE" {
+			fn(x)
+		}
+		for _, e := range x {
+			visitTables(e, fn)
+		}
+	}
+}
+
+// TimeTravel menambahkan "AT (at)" ke setiap referensi tabel di sql (selain
+// CTE), mis. at = "VERSION => 5". at disusun pemanggil dari nilai bertipe,
+// bukan input mentah. Referensi yang sudah ber-AT → ErrRewrite.
+func TimeTravel(ctx context.Context, codec Codec, sql, at string) (string, error) {
+	tmpl, err := serialize(ctx, codec, "SELECT 1 FROM t AT ("+at+")")
+	if err != nil {
+		return "", err
+	}
+	r := &rewriter{ctx: ctx, codec: codec}
+	visitTables(tmpl["statements"], func(t map[string]any) { r.at = t["at_clause"] })
+	if r.at == nil {
+		return "", fmt.Errorf("%w: invalid AT clause", ErrRewrite)
+	}
+	return r.run(sql)
+}
+
+func deepCopyAny(v any) any {
+	return deepCopy(map[string]any{"v": v})["v"]
 }
 
 func deepCopy(m map[string]any) map[string]any {

@@ -1,4 +1,4 @@
-{{- if or .Values.policy .Values.classification .Values.reports }}
+{{- if or .Values.policy .Values.classification .Values.reports .Values.ducklake.catalog }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,5 +16,26 @@ data:
   {{- with .Values.reports }}
   reports.yaml: |
     {{- . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.ducklake }}
+  {{- if .catalog }}
+  # Password Postgres lewat env PGPASSWORD (libpq), bukan di SQL.
+  init.sql: |
+    LOAD ducklake; LOAD postgres; LOAD httpfs;
+    ATTACH {{ printf "ducklake:postgres:%s" (required "ducklake.metadata is required" .metadata) | squote }} AS {{ .catalog }} (DATA_PATH {{ required "ducklake.dataPath is required" .dataPath | squote }});
+  secrets.yaml: |
+    secrets:
+      - name: {{ .catalog }}_data
+        type: s3
+        scope: {{ .dataPath | quote }}
+        options:
+          region: {{ .s3.region | quote }}
+          url_style: {{ .s3.urlStyle | quote }}
+          use_ssl: {{ .s3.useSSL | toString | quote }}
+          {{- with .s3.endpoint }}
+          endpoint: {{ . | quote }}
+          {{- end }}
+        env: { key_id: KARHUTLASQL_LAKE_KEY_ID, secret: KARHUTLASQL_LAKE_SECRET }
+  {{- end }}
   {{- end }}
 {{- end }}

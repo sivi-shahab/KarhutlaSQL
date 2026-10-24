@@ -116,7 +116,7 @@ func (s *Server) dqSnapshot(ctx context.Context, table string) (string, string, 
 	if err != nil {
 		return "", "", toStatus(ctx, err)
 	}
-	fp, err := fingerprint(ctx, sn, table)
+	fp, err := fingerprint(ctx, sn, table, "")
 	if err != nil {
 		return "", "", toStatus(ctx, err)
 	}

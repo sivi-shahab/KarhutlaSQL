@@ -64,6 +64,22 @@ unityCatalog:
 # Residency (G-07): path/prefix URL yang boleh diakses DuckDB.
 allowedDirectories: []
 
+# DuckLake multi-writer (Fase 8a, ADR 35): catalog metadata di Postgres, file
+# data di S3/MinIO. Butuh image varian lake (make docker-lake). Instance per
+# kelas beban = satu release per kelas dengan nilai lake yang sama (lihat
+# examples/lake-*.yaml). Secret existingSecret: key `pg-password`,
+# `s3-key-id`, `s3-secret`.
+ducklake:
+  catalog: ""           # nama catalog di SQL, mis. lake; kosong = mati
+  metadata: ""          # libpq conninfo TANPA password, mis. "host=pg dbname=lake user=karhutla"
+  dataPath: ""          # mis. s3://lake/data/ (otomatis masuk allowedDirectories)
+  s3:
+    endpoint: ""        # host:port MinIO; kosong = AWS S3
+    region: us-east-1
+    urlStyle: path
+    useSSL: true
+  existingSecret: ""
+
 oidc:
   issuer: ""            # mis. https://sso.corp/realms/data; wajib policy
   audience: karhutlasql

@@ -88,8 +88,13 @@ type Manifest struct {
 	Source     string    `json:"source"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at"`
+	// AsOf argumen time travel (versi snapshot DuckLake atau waktu RFC 3339);
+	// kosong = data terkini.
+	AsOf string `json:"as_of,omitempty"`
 	// SnapshotID sidik data sumber pada transaksi report (lihat Tables).
 	SnapshotID string `json:"snapshot_id"`
+	// LakeSnapshots ID snapshot DuckLake yang dibaca, per catalog sumber.
+	LakeSnapshots map[string]int64 `json:"lake_snapshots,omitempty"`
 	// Tables sidik isi tiap tabel sumber: "rows:<n>,hash:<x>" (DuckDB versi Engine).
 	Tables      map[string]string `json:"tables"`
 	Engine      string            `json:"engine"`

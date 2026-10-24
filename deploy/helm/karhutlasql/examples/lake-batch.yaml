@@ -1,0 +1,6 @@
+# Kelas batch/report: sedikit query berat, memori terpisah dari interactive.
+queryTimeout: 3600
+scheduler: { maxConcurrent: 2, queueSize: 32, queueTimeout: 30m }
+resources:
+  requests: { cpu: "8", memory: 32Gi }
+  limits: { memory: 32Gi }

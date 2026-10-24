@@ -4,6 +4,7 @@ package duckdb
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -172,5 +173,65 @@ func TestNormTable(t *testing.T) {
 	a, err := e.Analyze(context.Background(), `SELECT i FROM secret.main."select"`)
 	if err != nil || !slices.Equal(a.Tables, []string{"secret.main.select"}) || !slices.Equal(a.Catalogs, []string{"secret"}) {
 		t.Errorf("tables %v catalogs %v %v", a.Tables, a.Catalogs, err)
+	}
+}
+
+// openLake engine dengan catalog DuckLake "lake" (metadata file DuckDB, data
+// lokal) di balik guardrail seperti server; skip bila ekstensi ducklake tidak
+// bisa dimuat (offline / build statis).
+func openLake(t *testing.T, initSQL string) *Engine {
+	t.Helper()
+	dir := t.TempDir()
+	attach := fmt.Sprintf("ATTACH 'ducklake:%s/meta.ducklake' AS lake (DATA_PATH '%s/data/');\n", dir, dir)
+	ctx := context.Background()
+	var e *Engine
+	var err error
+	for _, load := range []string{"LOAD ducklake;\n", "INSTALL ducklake; LOAD ducklake;\n"} {
+		if e, err = Open(ctx, Config{InitSQL: load + attach + initSQL, AllowedDirectories: []string{dir + "/"}, StreamingBufferSize: "4MB"}); err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.Skipf("ducklake unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Close() })
+	return e
+}
+
+func TestAnalyze_DuckLake(t *testing.T) {
+	e := openLake(t, `CREATE SCHEMA lake.s;
+		CREATE TABLE lake.kredit (id INT, nik VARCHAR); CREATE TABLE lake.s.kredit (id INT);
+		CREATE TABLE lake.s.nasabah (id INT, nama VARCHAR);
+		INSERT INTO lake.kredit VALUES (1, 'a');`)
+	tests := []struct {
+		sql       string
+		tables    []string
+		functions []string
+	}{
+		{"SELECT nik FROM lake.kredit WHERE id = 1", []string{"lake.main.kredit"}, nil},
+		{"SELECT * FROM lake.kredit AT (VERSION => 5)", []string{"lake.main.kredit"}, nil},
+		{"SELECT * FROM lake.kredit k JOIN lake.s.nasabah n USING (id) WHERE id = $1", []string{"lake.main.kredit", "lake.s.nasabah"}, nil},
+		{"INSERT INTO lake.s.nasabah SELECT id, nik FROM lake.kredit", []string{"lake.main.kredit"}, nil},
+		{"UPDATE lake.s.nasabah SET nama = 'x' WHERE id = 1", []string{"lake.s.nasabah"}, nil},
+		{"DELETE FROM lake.s.nasabah WHERE id = 1", []string{"lake.s.nasabah"}, nil},
+		{"CREATE TABLE lake.s.x AS SELECT * FROM lake.s.nasabah", []string{"lake.s.nasabah"}, nil},
+		// Nama tabel sama di dua schema dalam satu statement: EXPLAIN tidak
+		// bisa membedakan scan → tak terselesaikan (butuh admin).
+		{"SELECT * FROM lake.kredit a JOIN lake.s.kredit b USING (id)", []string{"kredit"}, []string{"UNRESOLVED_TABLE:kredit"}},
+	}
+	for _, tt := range tests {
+		a, err := e.Analyze(context.Background(), tt.sql)
+		if err != nil {
+			t.Errorf("Analyze(%q): %v", tt.sql, err)
+			continue
+		}
+		slices.Sort(a.Tables)
+		if !reflect.DeepEqual(a.Tables, tt.tables) || !reflect.DeepEqual(a.Functions, tt.functions) {
+			t.Errorf("Analyze(%q) = %v %v, want %v %v", tt.sql, a.Tables, a.Functions, tt.tables, tt.functions)
+		}
+	}
+	a, err := e.Analyze(context.Background(), "SELECT nik FROM lake.kredit")
+	if err != nil || !reflect.DeepEqual(a.Columns["lake.main.kredit"], []string{"nik"}) || !reflect.DeepEqual(a.Catalogs, []string{"lake"}) {
+		t.Errorf("columns = %v catalogs = %v (%v)", a.Columns, a.Catalogs, err)
 	}
 }

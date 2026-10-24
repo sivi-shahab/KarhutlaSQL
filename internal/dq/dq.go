@@ -191,33 +191,59 @@ type Store struct {
 	st  objstore.Store
 	now func() time.Time
 
-	mu  sync.RWMutex
-	all []Validation // urut ValidatedAt
+	mu   sync.RWMutex
+	all  []Validation    // urut ValidatedAt
+	seen map[string]bool // objek dq/ yang sudah dimuat
 }
 
 // Open memuat riwayat validasi dari st.
 func Open(ctx context.Context, st objstore.Store) (*Store, error) {
-	s := &Store{st: st, now: time.Now}
-	keys, err := st.List(ctx, Prefix)
-	if err != nil {
-		return nil, fmt.Errorf("dq.Open: %w", err)
+	s := &Store{st: st, now: time.Now, seen: map[string]bool{}}
+	if err := s.Refresh(ctx); err != nil {
+		return nil, err
 	}
+	return s, nil
+}
+
+// Refresh memuat objek dq/ yang belum dikenal, mis. hasil dq_publish instance
+// lain yang berbagi arsip (topologi multi-instance, ADR 35).
+func (s *Store) Refresh(ctx context.Context) error {
+	keys, err := s.st.List(ctx, Prefix)
+	if err != nil {
+		return fmt.Errorf("dq.Refresh: %w", err)
+	}
+	var add [][]Validation
+	var loaded []string
 	for _, k := range keys {
-		if !strings.HasSuffix(k, ".parquet") {
+		s.mu.RLock()
+		known := s.seen[k]
+		s.mu.RUnlock()
+		if known || !strings.HasSuffix(k, ".parquet") {
 			continue
 		}
-		b, err := st.Get(ctx, k)
+		b, err := s.st.Get(ctx, k)
 		if err != nil {
-			return nil, fmt.Errorf("dq.Open: %w", err)
+			return fmt.Errorf("dq.Refresh: %w", err)
 		}
 		vs, err := decode(ctx, b)
 		if err != nil {
-			return nil, fmt.Errorf("dq.Open: %s: %w", k, err)
+			return fmt.Errorf("dq.Refresh: %s: %w", k, err)
 		}
-		s.all = append(s.all, vs...)
+		add, loaded = append(add, vs), append(loaded, k)
+	}
+	if len(loaded) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, k := range loaded {
+		if !s.seen[k] { // Publish/Refresh lain bisa mendahului
+			s.seen[k] = true
+			s.all = append(s.all, add[i]...)
+		}
 	}
 	slices.SortStableFunc(s.all, func(a, b Validation) int { return a.ValidatedAt.Compare(b.ValidatedAt) })
-	return s, nil
+	return nil
 }
 
 // Publish memberi ID & waktu, menyimpan v (append-only) lalu mengindeksnya.
@@ -232,6 +258,7 @@ func (s *Store) Publish(ctx context.Context, v Validation) (Validation, error) {
 		return Validation{}, fmt.Errorf("dq.Publish: %w", err)
 	}
 	s.mu.Lock()
+	s.seen[key] = true
 	s.all = append(s.all, v)
 	s.mu.Unlock()
 	return v, nil

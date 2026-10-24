@@ -185,4 +185,5 @@ secrets:
 ```
 
 Catatan: image distroless statis tidak bisa memuat httpfs (ADR 19), jadi
-secret bertipe `s3` hanya berlaku pada build dinamis.
+secret bertipe `s3` hanya berlaku pada build dinamis atau image varian `lake`
+(`make docker-lake`, lihat [DuckLake](ducklake.md)).

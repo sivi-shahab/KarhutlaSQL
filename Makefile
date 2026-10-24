@@ -6,7 +6,7 @@ TAGS    := duckdb_arrow
 PYTHON  ?= .venv/bin/python
 TPCH    := tests/data/tpch_sf0_01.duckdb
 
-.PHONY: build test test-integration testdata lint vuln sbom docs bench run-dev dev-certs docker
+.PHONY: build test test-integration testdata lint vuln sbom docs bench run-dev dev-certs docker docker-lake
 
 build:
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
@@ -64,3 +64,6 @@ IMAGE ?= karhutlasql:dev
 
 docker:
 	docker build -f deploy/Dockerfile --build-arg VERSION=$(VERSION) -t $(IMAGE) .
+
+docker-lake:
+	docker build -f deploy/Dockerfile --target lake --build-arg VERSION=$(VERSION) -t $(IMAGE)-lake .

@@ -9,14 +9,14 @@ Server SQL analitik ringan: **Apache Arrow Flight SQL** di atas **DuckDB**, ditu
 | Area | Fitur |
 |---|---|
 | Protokol | Arrow Flight SQL (JDBC, ADBC, Ibis, Superset, Grafana kompatibel) |
-| Engine | DuckDB (file / in-memory), init SQL untuk extension & ATTACH |
+| Engine | DuckDB (file / in-memory), init SQL untuk extension & ATTACH; DuckLake multi-writer (Postgres + MinIO) dengan instance per kelas beban |
 | Auth | Password → JWT, SSO/OIDC via JWKS, allowlist email/domain/group, TLS & mTLS |
 | Authz | Object privileges default-deny (catalog/schema/table/column), policy YAML, hot reload, four-eyes approval |
 | Governance | SQL rewriter: column masking berbasis tag klasifikasi, row-level security, profil `ai_sandbox` (SELECT-only + LIMIT) |
-| Kepatuhan | Access-history per kolom PII → Parquet WORM (retensi 10 th, DSAR export), residency guardrail, report run bertanda tangan untuk laporan OJK/SLIK |
+| Kepatuhan | Access-history per kolom PII → Parquet WORM (retensi 10 th, DSAR export), residency guardrail, report run bertanda tangan untuk laporan OJK/SLIK (time travel snapshot DuckLake) |
 | Operasional | Session registry, kill session, resource group & statement queuing, rate limit, query timeout, admin via Flight DoAction |
 | Observabilitas | Prometheus `/metrics` + `karhutla_metrics()`, `karhutla_query_history()`, slow-query log, audit log JSON |
-| Roadmap v2 | DuckLake (Postgres + MinIO) multi-writer, MCP server, result cache Arrow IPC, OpenTelemetry |
+| Roadmap v2 | MCP server, result cache Arrow IPC, OpenTelemetry |
 
 ## Quick start
 
@@ -64,7 +64,7 @@ docker run --rm -p 31337:31337 -p 9090:9090 -e KARHUTLASQL_PASSWORD \
 ./bin/karhutlasql-client --host localhost --tls-skip-verify
 ```
 
-Default image: `--database-filename /data/warehouse.duckdb --username admin --tls-self-signed` (sertifikat di memori; produksi pakai `--tls-cert/--tls-key`). Image statis tidak bisa `LOAD` ekstensi DuckDB (ADR 19). Compose: `deploy/compose/compose.yaml`.
+Default image: `--database-filename /data/warehouse.duckdb --username admin --tls-self-signed` (sertifikat di memori; produksi pakai `--tls-cert/--tls-key`). Image statis tidak bisa `LOAD` ekstensi DuckDB (ADR 19); untuk DuckLake pakai `make docker-lake` ([docs/ducklake.md](docs/ducklake.md)). Compose: `deploy/compose/compose.yaml`.
 
 Kubernetes: lihat `deploy/helm/` dan [docs/deploy-k8s.md](docs/deploy-k8s.md).
 

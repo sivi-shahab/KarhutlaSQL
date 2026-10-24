@@ -47,9 +47,10 @@ type Deps struct {
 	AccessLog *accesslog.Log
 	// DQ sumber karhutla_dq_results(); nil = fungsi menolak.
 	DQ *dq.Store
-	// RunReport menjalankan report sebagai identitas di ctx (G-10); hasil
+	// RunReport menjalankan report sebagai identitas di ctx (G-10); asOf
+	// kosong = data terkini, selain itu versi/waktu snapshot DuckLake. Hasil
 	// satu baris kolom reportCols. nil = fungsi menolak.
-	RunReport func(ctx context.Context, name string) ([]any, error)
+	RunReport func(ctx context.Context, name, asOf string) ([]any, error)
 	// MaskKey kunci HMAC-SHA256 untuk mask hash_hmac (G-03); kosong = fungsi
 	// mask menolak semua pemanggilan.
 	MaskKey []byte
@@ -75,6 +76,7 @@ func Register(_ context.Context, conn *sql.Conn, d Deps) error {
 		// Nama terpisah: duckdb-go gagal bila named argument tidak diberikan dan
 		// DuckDB mengabaikan registrasi overload kedua.
 		"karhutla_report_run":           table(reportCols, []duckdb.Type{duckdb.TYPE_VARCHAR}, nil, d.report),
+		"karhutla_report_run_at":        table(reportCols, []duckdb.Type{duckdb.TYPE_VARCHAR, duckdb.TYPE_VARCHAR}, nil, d.report),
 		"karhutla_access_history_range": table(accessCols, []duckdb.Type{duckdb.TYPE_DATE, duckdb.TYPE_DATE}, nil, d.access),
 	}
 	for name, f := range fns {
@@ -330,6 +332,9 @@ func (d Deps) dqResults(ctx context.Context, _ []any, _ map[string]any) ([][]any
 	if d.DQ == nil {
 		return nil, errors.New("karhutla_dq_results: data quality store is not configured (--archive-dir / --archive-s3-*)")
 	}
+	if err := d.DQ.Refresh(ctx); err != nil { // publish dari instance lain
+		return nil, fmt.Errorf("karhutla_dq_results: %w", err)
+	}
 	var out [][]any
 	for _, v := range d.DQ.All() {
 		out = append(out, []any{v.Table, v.Suite, v.RunID, v.ID, v.SnapshotID, v.Success, v.Evaluated, v.FailedCritical,
@@ -338,8 +343,9 @@ func (d Deps) dqResults(ctx context.Context, _ []any, _ map[string]any) ([][]any
 	return out, nil
 }
 
-// report: karhutla_report_run(name) — dijalankan saat eksekusi (FillRow),
-// bukan bind; izin & DQ gate ditegakkan RunReport.
+// report: karhutla_report_run(name) / karhutla_report_run_at(name, as_of) —
+// dijalankan saat eksekusi (FillRow), bukan bind; izin & DQ gate ditegakkan
+// RunReport.
 func (d Deps) report(ctx context.Context, args []any, _ map[string]any) ([][]any, error) {
 	if _, err := identity(ctx); err != nil {
 		return nil, err
@@ -348,7 +354,13 @@ func (d Deps) report(ctx context.Context, args []any, _ map[string]any) ([][]any
 		return nil, fmt.Errorf("%w: report run is not configured", ErrFailedPrecondition)
 	}
 	name, _ := args[0].(string)
-	row, err := d.RunReport(ctx, name)
+	var asOf string
+	if len(args) > 1 {
+		if asOf, _ = args[1].(string); asOf == "" {
+			return nil, fmt.Errorf("%w: karhutla_report_run_at: as_of is required", ErrFailedPrecondition)
+		}
+	}
+	row, err := d.RunReport(ctx, name, asOf)
 	if err != nil {
 		return nil, fmt.Errorf("karhutla_report_run: %w", err)
 	}

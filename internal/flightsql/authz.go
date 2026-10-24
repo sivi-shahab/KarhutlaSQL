@@ -26,7 +26,7 @@ import (
 
 // safeFunctions table function yang tidak membaca data di luar catalog dan
 // boleh dipakai tanpa izin admin. karhutla_* menegakkan izinnya sendiri.
-var safeFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST", "KARHUTLA_SESSIONS", "KARHUTLA_METRICS", "KARHUTLA_KILL_SESSION", "KARHUTLA_QUERY_HISTORY", "KARHUTLA_ACCESS_HISTORY", "KARHUTLA_ACCESS_HISTORY_RANGE", "KARHUTLA_REPORT_RUN", "KARHUTLA_DQ_RESULTS"}
+var safeFunctions = []string{"RANGE", "GENERATE_SERIES", "UNNEST", "KARHUTLA_SESSIONS", "KARHUTLA_METRICS", "KARHUTLA_KILL_SESSION", "KARHUTLA_QUERY_HISTORY", "KARHUTLA_ACCESS_HISTORY", "KARHUTLA_ACCESS_HISTORY_RANGE", "KARHUTLA_REPORT_RUN", "KARHUTLA_REPORT_RUN_AT", "KARHUTLA_DQ_RESULTS"}
 
 // writeKinds statement yang target tulisnya ditentukan sqlrewrite.
 var writeKinds = []string{"INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"}
@@ -95,7 +95,7 @@ func control(a engine.Analysis) bool {
 		return false
 	}
 	for _, f := range a.Functions {
-		if !strings.HasPrefix(f, "KARHUTLA_") || f == "KARHUTLA_REPORT_RUN" { // report = beban berat: antre
+		if !strings.HasPrefix(f, "KARHUTLA_") || strings.HasPrefix(f, "KARHUTLA_REPORT_RUN") { // report = beban berat: antre
 			return false
 		}
 	}

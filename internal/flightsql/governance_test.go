@@ -10,9 +10,11 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +33,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/authz"
 	"github.com/bankmega/karhutlasql/internal/classification"
 	"github.com/bankmega/karhutlasql/internal/dq"
+	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/objstore"
 	"github.com/bankmega/karhutlasql/internal/report"
 )
@@ -495,6 +498,98 @@ func TestReportRun(t *testing.T) {
 	if strings.Join(statuses, ",") != "OK,OK,FailedPrecondition,PermissionDenied" {
 		t.Errorf("report_run audit %v", statuses)
 	}
+}
+
+// G-10 di atas DuckLake (Fase 8a): governance pada tabel lake, time travel
+// ter-govern, report run pada snapshot lampau.
+func TestReportRun_DuckLake(t *testing.T) {
+	dir := t.TempDir()
+	probe, err := duckdb.Open(context.Background(), duckdb.Config{InitSQL: "LOAD ducklake", Unlocked: true})
+	if err != nil {
+		t.Skipf("ducklake unavailable: %v", err)
+	}
+	_ = probe.Close()
+	g := startGov(t, func(o *envOpts) {
+		o.initSQL = fmt.Sprintf("LOAD ducklake; ATTACH 'ducklake:%s/meta.ducklake' AS warehouse (DATA_PATH '%s/data/');\n", dir, dir) +
+			strings.Replace(o.initSQL, "ATTACH ':memory:' AS warehouse; ", "", 1)
+		o.allowedDirs = []string{dir + "/"}
+	})
+	ver := func() string {
+		got, err := g.rows("ops", "SELECT id FROM warehouse.current_snapshot()")
+		if err != nil || len(got) != 1 {
+			t.Fatalf("current_snapshot: %v %v", got, err)
+		}
+		return strings.TrimSuffix(got[0], "|")
+	}
+	v0 := ver()
+	masked := strings.Repeat("*", len(g.secret)) + "0001|"
+	for _, q := range []string{"SELECT nik FROM warehouse.nasabah ORDER BY nik LIMIT 1",
+		"SELECT nik FROM warehouse.nasabah AT (VERSION => " + v0 + ") ORDER BY nik LIMIT 1"} {
+		if got, err := g.rows("analyst", q); err != nil || len(got) != 1 || got[0] != masked {
+			t.Errorf("%s: %v %v", q, got, err)
+		}
+	}
+	manifest := func(row string) report.Manifest {
+		f := strings.Split(row, "|")
+		read := func(k string) []byte {
+			b, err := g.archive.Get(context.Background(), f[4]+k)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return b
+		}
+		m, err := report.Verify(read("manifest.json"), read("manifest.json.sig"), read("result.parquet"), g.pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	first, err := g.rows("analyst", "CALL karhutla_report_run('nasabah_cabang')")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := manifest(first[0]); m.LakeSnapshots["warehouse"] != mustInt(t, v0) || m.AsOf != "" {
+		t.Errorf("manifest lake_snapshots %v as_of %q, want warehouse=%s", m.LakeSnapshots, m.AsOf, v0)
+	}
+
+	if _, err := g.rows("ops", "DELETE FROM warehouse.nasabah WHERE nama = 'Nama 1'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.rows("analyst", "CALL karhutla_report_run('nasabah_cabang')"); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("current data (9 rows) should fail assert: %v", err)
+	}
+	// Time travel: data & sidik sama dengan run pertama, hasil tetap ter-mask.
+	again, err := g.rows("analyst", "CALL karhutla_report_run_at('nasabah_cabang', '"+v0+"')")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := manifest(again[0])
+	if strings.Split(again[0], "|")[2] != strings.Split(first[0], "|")[2] || m.Result.Rows != 10 || m.AsOf != v0 ||
+		m.LakeSnapshots["warehouse"] != mustInt(t, v0) {
+		t.Errorf("as_of run %q manifest %+v, first %q", again[0], m, first[0])
+	}
+	if m.Result.SHA256 != manifest(first[0]).Result.SHA256 {
+		// nonce masking HMAC berbeda per run, tapi report ini hanya partial mask: hasil identik.
+		t.Errorf("as_of result differs from original run")
+	}
+	for _, bad := range []string{"kemarin", "-1"} {
+		if _, err := g.rows("analyst", "CALL karhutla_report_run_at('nasabah_cabang', '"+bad+"')"); status.Code(err) != codes.FailedPrecondition {
+			t.Errorf("as_of %q: %v", bad, err)
+		}
+	}
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	if _, err := g.rows("analyst", "CALL karhutla_report_run_at('nasabah_cabang', '"+future+"')"); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "ada_data") {
+		t.Errorf("as_of time = latest (9 rows) should fail assert: %v", err)
+	}
+}
+
+func mustInt(t *testing.T, s string) int64 {
+	t.Helper()
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }
 
 func TestDQPublishAndGate(t *testing.T) {

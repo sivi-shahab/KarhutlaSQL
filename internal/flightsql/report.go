@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/report"
 	"github.com/bankmega/karhutlasql/internal/sqlext"
+	"github.com/bankmega/karhutlasql/internal/sqlrewrite"
 )
 
 // ReportRun hasil satu report run (baris karhutla_report_run()).
@@ -32,12 +34,14 @@ type ReportRun struct {
 // report & assert di-otorisasi seperti statement biasa (masking/RLS berlaku),
 // lalu dieksekusi dalam satu transaksi engine: sidik tabel sumber, DQ gate
 // (assert), hasil Parquet. Manifest ditandatangani Ed25519 dan semuanya
-// disimpan di arsip. Error memakai awalan sqlext agar terpetakan ke kode gRPC.
-func (s *Server) RunReport(ctx context.Context, name string) (ReportRun, error) {
+// disimpan di arsip. asOf (versi atau waktu RFC 3339) menjalankan report pada
+// snapshot DuckLake lampau (time travel); kosong = data terkini. Error memakai
+// awalan sqlext agar terpetakan ke kode gRPC.
+func (s *Server) RunReport(ctx context.Context, name, asOf string) (ReportRun, error) {
 	id, _ := auth.FromContext(ctx)
 	start := time.Now().UTC()
 	m := report.Manifest{ReportID: start.Format("20060102T150405Z") + "-" + uuid.NewString()[:8], Name: name, User: id.Subject,
-		Source: id.Source, StartedAt: start, Tables: map[string]string{}, DQValidates: []string{}}
+		Source: id.Source, StartedAt: start, AsOf: asOf, Tables: map[string]string{}, DQValidates: []string{}}
 	ev := audit.Event{Type: audit.ReportRun, User: id.Subject, Source: id.Source, Object: name, Detail: m.ReportID}
 
 	def, ok := s.opts.Reports[name]
@@ -73,7 +77,27 @@ func (s *Server) RunReport(ctx context.Context, name string) (ReportRun, error) 
 
 func (s *Server) runReport(ctx context.Context, def report.Def, m *report.Manifest) (ReportRun, error) {
 	id, _ := auth.FromContext(ctx)
-	pl, err := s.authorize(ctx, def.SQL)
+	at, err := asOfClause(m.AsOf)
+	if err != nil {
+		return ReportRun{}, err
+	}
+	// Time travel: AT pada setiap tabel report & assert sebelum otorisasi,
+	// sehingga governance berlaku pada SQL yang benar-benar dieksekusi.
+	travel := func(q string) (string, error) {
+		if at == "" {
+			return q, nil
+		}
+		out, err := sqlrewrite.TimeTravel(ctx, s.eng, q, at)
+		if err != nil {
+			return "", fmt.Errorf("%w: as_of: %w", sqlext.ErrFailedPrecondition, err)
+		}
+		return out, nil
+	}
+	q, err := travel(def.SQL)
+	if err != nil {
+		return ReportRun{}, err
+	}
+	pl, err := s.authorize(ctx, q)
 	if err != nil {
 		return ReportRun{}, err
 	}
@@ -83,7 +107,10 @@ func (s *Server) runReport(ctx context.Context, def report.Def, m *report.Manife
 	asserts := make([]plan, len(def.Asserts))
 	tables := slices.Clone(pl.final.Tables)
 	for i, a := range def.Asserts {
-		if asserts[i], err = s.authorize(ctx, a.SQL); err != nil {
+		if q, err = travel(a.SQL); err != nil {
+			return ReportRun{}, err
+		}
+		if asserts[i], err = s.authorize(ctx, q); err != nil {
 			return ReportRun{}, err
 		}
 		for _, t := range asserts[i].final.Tables {
@@ -108,7 +135,7 @@ func (s *Server) runReport(ctx context.Context, def report.Def, m *report.Manife
 	h.Write([]byte("duckdb " + m.Engine))
 	snaps := map[string]string{}
 	for _, t := range tables {
-		fp, err := fingerprint(ctx, sn, t)
+		fp, err := fingerprint(ctx, sn, t, at)
 		if err != nil {
 			return ReportRun{}, err
 		}
@@ -117,9 +144,15 @@ func (s *Server) runReport(ctx context.Context, def report.Def, m *report.Manife
 		h.Write([]byte("\n" + t + "=" + fp))
 	}
 	m.SnapshotID = hex.EncodeToString(h.Sum(nil))[:32]
+	if m.LakeSnapshots, err = lakeSnapshots(ctx, sn, tables, at); err != nil {
+		return ReportRun{}, err
+	}
 
 	// DQ gate (Q-05): hasil GX terbaru tiap tabel sumber pada data yang sama.
 	if s.opts.DQ != nil && s.opts.DQMaxAge > 0 {
+		if err := s.opts.DQ.Refresh(ctx); err != nil { // hasil dq_publish instance lain (ADR 35)
+			return ReportRun{}, err
+		}
 		if m.DQValidates, err = s.opts.DQ.Gate(snaps, s.opts.DQMaxAge, id.Source+":"+id.Subject); err != nil {
 			return ReportRun{}, fmt.Errorf("%w: report gate failed: %w", sqlext.ErrFailedPrecondition, err)
 		}
@@ -171,14 +204,75 @@ func (s *Server) runReport(ctx context.Context, def report.Def, m *report.Manife
 	return run, nil
 }
 
-// fingerprint sidik isi tabel pada transaksi sn: jumlah baris + jumlah hash
-// baris (tidak bergantung urutan). Hanya digest; tidak ada nilai yang keluar.
-func fingerprint(ctx context.Context, sn engine.Snapshot, table string) (string, error) {
+// asOfClause klausa AT DuckLake dari as_of: bilangan bulat = versi
+// snapshot, RFC 3339 = waktu. Kosong = tanpa time travel.
+func asOfClause(asOf string) (string, error) {
+	if asOf == "" {
+		return "", nil
+	}
+	if v, err := strconv.ParseUint(asOf, 10, 63); err == nil {
+		return fmt.Sprintf("VERSION => %d", v), nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, asOf)
+	if err != nil {
+		return "", fmt.Errorf("%w: as_of %q: want a snapshot version or an RFC 3339 time", sqlext.ErrFailedPrecondition, asOf)
+	}
+	return "TIMESTAMP => TIMESTAMPTZ " + classification.Literal(t.UTC().Format("2006-01-02 15:04:05.999999")+"+00"), nil
+}
+
+// lakeSnapshots ID snapshot DuckLake yang dibaca report per catalog sumber
+// bertipe ducklake: snapshot transaksi (tanpa at), versi at (harus ada), atau
+// snapshot terakhir pada/sebelum waktu at.
+func lakeSnapshots(ctx context.Context, sn engine.Snapshot, tables []string, at string) (map[string]int64, error) {
+	cond := "TRUE"
+	if v, ok := strings.CutPrefix(at, "VERSION => "); ok {
+		cond = "snapshot_id = " + v
+	} else if ts, ok := strings.CutPrefix(at, "TIMESTAMP => "); ok {
+		cond = "snapshot_time <= " + ts
+	}
+	var out map[string]int64
+	for _, t := range tables {
+		cat, _, _ := strings.Cut(t, ".")
+		if _, done := out[cat]; done {
+			continue
+		}
+		n, err := scalar(ctx, sn, "SELECT count(*) FROM duckdb_databases() WHERE type = 'ducklake' AND lower(database_name) = "+classification.Literal(cat))
+		if err != nil {
+			return nil, err
+		}
+		if n != "1" {
+			continue
+		}
+		v, err := scalar(ctx, sn, fmt.Sprintf("SELECT max(snapshot_id) FROM %s.snapshots() WHERE %s", classification.Ident(cat), cond))
+		if err != nil {
+			return nil, err
+		}
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: catalog %s has no snapshot at %s", sqlext.ErrFailedPrecondition, cat, at)
+		}
+		if out == nil {
+			out = map[string]int64{}
+		}
+		out[cat] = id
+	}
+	return out, nil
+}
+
+// fingerprint sidik isi tabel pada transaksi sn (dan snapshot at): jumlah
+// baris + jumlah hash baris (tidak bergantung urutan). Hanya digest; tidak
+// ada nilai yang keluar.
+// ponytail: scan penuh juga untuk tabel DuckLake; pakai statistik snapshot
+// DuckLake bila tabel besar membuat report lambat.
+func fingerprint(ctx context.Context, sn engine.Snapshot, table, at string) (string, error) {
 	parts := strings.Split(table, ".")
 	for i := range parts {
 		parts[i] = classification.Ident(parts[i])
 	}
-	return scalar(ctx, sn, fmt.Sprintf("SELECT 'rows:' || count(*) || ',hash:' || coalesce(sum(hash(x)), 0) FROM %s x", strings.Join(parts, ".")))
+	if at != "" {
+		at = " AT (" + at + ")"
+	}
+	return scalar(ctx, sn, fmt.Sprintf("SELECT 'rows:' || count(*) || ',hash:' || coalesce(sum(hash(x)), 0) FROM %s AS x%s", strings.Join(parts, "."), at))
 }
 
 // tableSnapshotID ID snapshot satu tabel (pengikat hasil DQ ke data, Q-03).
@@ -217,8 +311,8 @@ func scalar(ctx context.Context, sn engine.Snapshot, q string) (string, error) {
 // ReportRow RunReport sebagai baris karhutla_report_run(): report_id, name,
 // snapshot_id, rows, location (prefix key di arsip), result_sha256,
 // manifest_sha256.
-func (s *Server) ReportRow(ctx context.Context, name string) ([]any, error) {
-	r, err := s.RunReport(ctx, name)
+func (s *Server) ReportRow(ctx context.Context, name, asOf string) ([]any, error) {
+	r, err := s.RunReport(ctx, name, asOf)
 	if err != nil {
 		return nil, err
 	}

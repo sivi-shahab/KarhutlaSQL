@@ -41,3 +41,16 @@ columns:
 		}
 	}
 }
+
+func TestPartialMaskNestedTypes(t *testing.T) {
+	m := Mask{Mask: MaskPartial, KeepLast: 4}
+	for typ, wantRedact := range map[string]bool{
+		"VARCHAR": false, "BIGINT": false, "DECIMAL(18,2)": false,
+		"FLOAT[3]": true, "VARCHAR[]": true, "STRUCT(a INTEGER)": true, "MAP(VARCHAR, INTEGER)": true,
+	} {
+		e := m.Expr(`"c"`, typ, "")
+		if got := strings.Contains(e, "[REDACTED]"); got != wantRedact {
+			t.Errorf("%s: redact=%v, expr %s", typ, got, e)
+		}
+	}
+}

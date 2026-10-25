@@ -114,7 +114,13 @@ func (c *Classification) TableTags(table string) map[string]string {
 // typ. nonce diteruskan ke UDF HMAC (menolak pemanggilan di luar rewrite).
 func (m Mask) Expr(ident, typ, nonce string) string {
 	v := "CAST(" + ident + " AS VARCHAR)"
-	switch m.Mask {
+	mask := m.Mask
+	if mask == MaskPartial && nested(typ) {
+		// Teks vektor/list/struct: karakter terakhir = potongan nilai asli
+		// (mis. komponen embedding) → redact (fail-closed).
+		mask = MaskRedact
+	}
+	switch mask {
 	case MaskNull:
 		return "CAST(NULL AS " + typ + ")"
 	case MaskHMAC:
@@ -125,6 +131,12 @@ func (m Mask) Expr(ident, typ, nonce string) string {
 	default: // redact (dan nilai tak dikenal: fail-closed)
 		return "CASE WHEN " + ident + " IS NULL THEN NULL ELSE '[REDACTED]' END"
 	}
+}
+
+// nested: tipe DuckDB bersarang (ARRAY/LIST "T[n]"/"T[]", STRUCT, MAP, UNION).
+func nested(typ string) bool {
+	t := strings.ToUpper(strings.TrimSpace(typ))
+	return strings.HasSuffix(t, "]") || strings.HasPrefix(t, "STRUCT") || strings.HasPrefix(t, "MAP") || strings.HasPrefix(t, "UNION")
 }
 
 // Ident meng-quote identifier SQL.

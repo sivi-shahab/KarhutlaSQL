@@ -40,7 +40,7 @@ inside the server, so they pass through exactly the same governance.
 | Observability | Prometheus metrics, OpenTelemetry tracing, query history, sessions & kill | [Monitoring](/monitoring) |
 | Compliance | WORM access history, PII data-subject access, signed report runs, audit log | [Reports](/reports) |
 | Data quality & catalog | Great Expectations gate, Unity Catalog OSS sync | [Data quality](/data-quality) · [Catalog](/catalog) |
-| AI | MCP server (HTTP & stdio), verified queries, semantic model | [MCP](/mcp) |
+| AI | MCP server (HTTP & stdio), verified queries, semantic model; vector similarity search with HNSW index (preview) | [MCP](/mcp) · [Vector search](/vector-search) |
 | Scale-out | DuckLake multi-writer, time travel, shared kill-session | [DuckLake](/ducklake) |
 | Automation | Cron-scheduled signed report runs and atomic materialized-table refreshes as `job:<name>` identities | [Scheduled jobs](/jobs) |
 | Operations | Tiered backups, schema migrations, Vault Transit signing keys | [Operations](/operations) |

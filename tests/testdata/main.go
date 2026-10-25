@@ -38,7 +38,8 @@ func run(out, sf string) error {
 		return err
 	}
 	ctx := context.Background()
-	e, err := duckdb.Open(ctx, duckdb.Config{Path: out, InitSQL: "INSTALL tpch; LOAD tpch; CALL dbgen(sf = " + sf + ");"})
+	// INSTALL vss: ekstensi indeks HNSW untuk tes vector search (fase 10b).
+	e, err := duckdb.Open(ctx, duckdb.Config{Path: out, InitSQL: "INSTALL tpch; LOAD tpch; INSTALL vss; CALL dbgen(sf = " + sf + ");"})
 	if err != nil {
 		return err
 	}

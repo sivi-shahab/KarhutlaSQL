@@ -91,7 +91,9 @@ columns:
   warehouse.main.nasabah.nik: pii.nik
 ```
 
-`hash_hmac` needs a key of ≥ 32 bytes in the env var named by
+A `partial` mask on a nested column (vector `FLOAT[n]`, list, struct, map) is
+applied as `redact`: the last characters of its text form are part of the
+values. `hash_hmac` needs a key of ≥ 32 bytes in the env var named by
 `--mask-hmac-key-env` (default `KARHUTLASQL_MASK_KEY`).
 
 How it works: every table that is masked/row-filtered for the caller is

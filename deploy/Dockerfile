@@ -17,7 +17,7 @@ RUN CGO_ENABLED=1 go build -tags duckdb_arrow,netgo,osusergo -trimpath \
       -o /out/ ./cmd/... \
  && mkdir /out/data
 
-# Varian lake: binary dinamis (dlopen) + ekstensi DuckLake/Postgres/httpfs
+# Varian lake: binary dinamis (dlopen) + ekstensi DuckLake/Postgres/httpfs/vss
 # di-bundle saat build, sehingga runtime tidak pernah INSTALL dari internet
 # (guardrail G-07 menolaknya). DUCKDB_VERSION = versi DuckDB di go.mod.
 FROM golang:1.27-bookworm AS build-lake
@@ -35,7 +35,7 @@ RUN CGO_ENABLED=1 go build -tags duckdb_arrow -trimpath \
       -o /out/ ./cmd/... \
  && mkdir /out/data \
  && plat="linux_$(go env GOARCH)" && ext="/out/ext/${DUCKDB_VERSION}/${plat}" && mkdir -p "$ext" \
- && for e in ducklake postgres_scanner httpfs; do \
+ && for e in ducklake postgres_scanner httpfs vss; do \
       curl -fsSL "${DUCKDB_EXTENSIONS_URL}/${DUCKDB_VERSION}/${plat}/${e}.duckdb_extension.gz" | gunzip > "$ext/${e}.duckdb_extension"; \
     done
 

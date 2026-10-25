@@ -102,13 +102,16 @@ func (e *Engine) Analyze(ctx context.Context, query string) (engine.Analysis, er
 	if err != nil {
 		return engine.Analysis{}, wrap("duckdb.Analyze", err)
 	}
-	// DUCKLAKE_SCAN menulis nama tabel tanpa catalog/schema di EXPLAIN;
-	// nama lengkapnya diambil dari plan terserialisasi (ADR 35).
-	var lake map[string][]string
+	// DUCKLAKE_SCAN dan HNSW_INDEX_SCAN (ekstensi vss) menulis nama tabel
+	// tanpa catalog/schema di EXPLAIN; nama lengkapnya diambil dari plan
+	// terserialisasi (ADR 35, ADR 47).
+	var lake shortNames
 	for _, p := range plans {
-		if strings.Contains(p[1], `"DUCKLAKE_SCAN"`) {
-			lake = lakeTables(ctx, c, query)
-			break
+		if lake.lake == nil && strings.Contains(p[1], `"DUCKLAKE_SCAN"`) {
+			lake.lake = lakeTables(ctx, c, query)
+		}
+		if lake.index == nil && strings.Contains(p[1], `"HNSW_INDEX_SCAN"`) {
+			lake.index = planTables(ctx, c, query)
 		}
 	}
 	for _, p := range plans { // (explain_key, explain_value)
@@ -182,6 +185,24 @@ func lakeTables(ctx context.Context, c *duckdbdrv.Conn, query string) map[string
 	return out
 }
 
+// planTables nama tabel → nama lengkap semua LOGICAL_GET di plan logis
+// pra-optimasi. Scan indeks (HNSW) membaca salah satu tabel ini: optimizer
+// tidak menambah tabel. (Plan teroptimasi vss gagal diserialisasi DuckDB.)
+func planTables(ctx context.Context, c *duckdbdrv.Conn, query string) map[string][]string {
+	cols, _, ok := planColumns(ctx, c, query, false)
+	if !ok {
+		return nil
+	}
+	out := map[string][]string{}
+	for t := range cols {
+		short := t[strings.LastIndexByte(t, '.')+1:]
+		list := out[short]
+		addUnique(&list, t)
+		out[short] = list
+	}
+	return out
+}
+
 // planColumns tabel → kolom setiap LOGICAL_GET di json_serialize_plan, plus
 // daftar tabel yang dibaca lewat ducklake_scan.
 func planColumns(ctx context.Context, c *duckdbdrv.Conn, query string, optimize bool) (map[string][]string, []string, bool) {
@@ -246,7 +267,7 @@ func planColumns(ctx context.Context, c *duckdbdrv.Conn, query string, optimize 
 // walker mengumpulkan catalog/tabel/fungsi dari satu plan EXPLAIN.
 type walker struct {
 	a       *engine.Analysis
-	lake    map[string][]string // lihat lakeTables
+	lake    shortNames
 	logical bool
 }
 
@@ -256,15 +277,30 @@ type walker struct {
 var lakeWrites = map[string]bool{"DUCKLAKE_INSERT": true, "DUCKLAKE_UPDATE": true, "DUCKLAKE_DELETE": true,
 	"DUCKLAKE_CREATE_TABLE_AS": true, "DUCKLAKE_INLINE_DATA": true}
 
+// shortNames kandidat nama lengkap untuk scan yang hanya menulis nama tabel
+// pendek di EXPLAIN: lake (DUCKLAKE_SCAN, lihat lakeTables) dan index
+// (HNSW_INDEX_SCAN, lihat planTables).
+type shortNames struct {
+	lake, index map[string][]string
+}
+
 // tableName nama "catalog.schema.table" dari extra_info Table; scan DuckLake
-// diselesaikan lewat lake bila tepat satu kandidat (ambigu → tetap pendek →
-// ditolak di walk).
-func tableName(n planNode, table string, lake map[string][]string) string {
+// dan indeks HNSW diselesaikan bila tepat satu kandidat (ambigu → tetap
+// pendek → ditolak di walk).
+func tableName(n planNode, table string, names shortNames) string {
 	table = normTable(table)
-	if n.Name == "DUCKLAKE_SCAN" && !strings.Contains(table, ".") {
-		if l := lake[table]; len(l) == 1 {
-			return l[0]
-		}
+	if strings.Contains(table, ".") {
+		return table
+	}
+	var m map[string][]string
+	switch n.Name {
+	case "DUCKLAKE_SCAN":
+		m = names.lake
+	case "HNSW_INDEX_SCAN":
+		m = names.index
+	}
+	if l := m[table]; len(l) == 1 {
+		return l[0]
 	}
 	return table
 }
@@ -336,7 +372,7 @@ func normTable(s string) string {
 }
 
 // columns mencatat Projections setiap scan tabel di plan fisik.
-func columns(a *engine.Analysis, n planNode, lake map[string][]string) {
+func columns(a *engine.Analysis, n planNode, lake shortNames) {
 	if table, _ := n.ExtraInfo["Table"].(string); table != "" {
 		var cols []string
 		switch p := n.ExtraInfo["Projections"].(type) {

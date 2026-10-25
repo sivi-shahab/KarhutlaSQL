@@ -41,6 +41,7 @@ const guides = [
   { text: 'Unity Catalog', link: '/catalog' },
   { text: 'MCP server (AI agents)', link: '/mcp' },
   { text: 'DuckLake multi-writer', link: '/ducklake' },
+  { text: 'Vector search (preview)', link: '/vector-search' },
   { text: 'Backup, migrations & keys', link: '/operations' },
   { text: 'Kubernetes (Helm)', link: '/deploy-k8s' },
 ]

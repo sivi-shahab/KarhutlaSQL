@@ -235,3 +235,34 @@ func TestAnalyze_DuckLake(t *testing.T) {
 		t.Errorf("columns = %v catalogs = %v (%v)", a.Columns, a.Catalogs, err)
 	}
 }
+
+// HNSW_INDEX_SCAN (ekstensi vss) menulis nama tabel pendek; Analyze harus
+// menyelesaikannya ke nama lengkap (bukan UNRESOLVED_TABLE) agar izin, RLS,
+// dan masking berlaku pada tabel yang benar.
+func TestAnalyze_HNSWIndexScan(t *testing.T) {
+	e, err := Open(context.Background(), Config{InitSQL: "LOAD vss", Unlocked: true})
+	if err != nil {
+		t.Skipf("vss extension not available: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Close() })
+	ctx := context.Background()
+	for _, q := range []string{
+		"CREATE TABLE dok (id INTEGER, judul VARCHAR, emb FLOAT[3])",
+		"INSERT INTO dok VALUES (1, 'a', [0.9, 0.1, 0.0]), (2, 'b', [0.0, 1.0, 0.0])",
+		"CREATE INDEX dok_hnsw ON dok USING HNSW (emb) WITH (metric = 'cosine')",
+	} {
+		if _, err := e.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := e.Analyze(ctx, "SELECT id, judul FROM dok ORDER BY array_cosine_distance(emb, [1.0, 0.0, 0.0]::FLOAT[3]) LIMIT 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(a.Tables, "memory.main.dok") || slices.ContainsFunc(a.Functions, func(f string) bool { return strings.HasPrefix(f, "UNRESOLVED_TABLE") }) {
+		t.Fatalf("tables %v functions %v", a.Tables, a.Functions)
+	}
+	if cols := a.Columns["memory.main.dok"]; !slices.Contains(cols, "emb") {
+		t.Errorf("columns = %v", a.Columns)
+	}
+}

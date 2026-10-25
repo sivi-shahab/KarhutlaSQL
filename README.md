@@ -31,7 +31,7 @@ A lightweight analytical SQL server: **Apache Arrow Flight SQL** on top of **Duc
 flowchart LR
     clients["BI & ADBC clients<br/>Superset · Grafana · JDBC/ADBC"]
     pgclients["Postgres-only tools<br/>psql · Power BI · ODBC"]
-    webapps["Web apps & notebooks<br/>apache-arrow · pyarrow"]
+    webapps["Browsers, web apps & notebooks<br/>web UI · apache-arrow · pyarrow"]
     recipients["Sharing recipients<br/>regulator · partners"]
     agents["AI agents<br/>Claude · Copilot via MCP"]
     gx["Airflow + GX<br/>Great Expectations"]
@@ -42,21 +42,22 @@ flowchart LR
     subgraph srv["karhutlasql-server process (per instance / workload class)"]
         grpc["Flight SQL server<br/>arrow-go Flight SQL · grpc-go"]
         pgwire["PostgreSQL listener<br/>pgproto3 · --pg-port"]
-        httpapi["HTTP API & Delta Sharing<br/>Arrow IPC · Parquet · --http-port"]
+        httpapi["HTTP API, web UI & Delta Sharing<br/>Arrow IPC · Parquet · --http-port"]
         jobs["Scheduled jobs<br/>cron · report · refresh"]
         mcp["MCP server<br/>MCP go-sdk · HTTP / stdio"]
         gov["Governance<br/>pg_query_go · policy YAML"]
         exec["Execution<br/>queues · quotas · result cache"]
-        engine["DuckDB engine<br/>DuckDB 1.5.6 · duckdb-go"]
+        engine["DuckDB engine<br/>DuckDB 1.5.6 · vss · sqlite"]
         ops["Reports & operations<br/>report · backup · DQ · UC sync"]
     end
     duckfile[("DuckDB file<br/>warehouse.duckdb")]
     lake[("DuckLake<br/>Postgres + MinIO")]
+    sqlitef[("SQLite files<br/>attached read-only")]
     archive[("WORM archive<br/>MinIO / S3 · Parquet")]
 
     clients -- Flight SQL --> grpc
     pgclients -- Postgres wire --> pgwire
-    webapps -- "POST /api/v1/query" --> httpapi
+    webapps -- "web UI · /api/v1/query" --> httpapi
     recipients -- Delta Sharing --> httpapi
     pgwire -. in-process Flight SQL .-> grpc
     httpapi -. in-process Flight SQL .-> grpc
@@ -70,6 +71,7 @@ flowchart LR
     exec -- execute --> engine
     engine -- read / write --> duckfile
     engine -- ATTACH --> lake
+    engine -. ATTACH read-only .-> sqlitef
     exec -. metrics · trace .-> obs
     exec -. access history .-> archive
     gov -- report_run --> ops

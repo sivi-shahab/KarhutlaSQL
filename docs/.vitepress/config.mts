@@ -24,6 +24,9 @@ const tutorials = [
   { text: '11. Scheduled jobs & materialized tables', link: '/tutorials/11-scheduled-jobs' },
   { text: '12. PostgreSQL & HTTP clients', link: '/tutorials/12-postgres-http' },
   { text: '13. Share data with Delta Sharing', link: '/tutorials/13-delta-sharing' },
+  { text: '14. The web UI', link: '/tutorials/14-web-ui' },
+  { text: '15. Vector search', link: '/tutorials/15-vector-search' },
+  { text: '16. SQLite catalogs', link: '/tutorials/16-sqlite' },
 ]
 
 const guides = [

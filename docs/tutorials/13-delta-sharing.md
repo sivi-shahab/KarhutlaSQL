@@ -251,4 +251,4 @@ supported column types).
 
 ## Next
 
-[Core concepts →](/guide/concepts)
+[14. The web UI →](/tutorials/14-web-ui)

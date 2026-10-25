@@ -26,9 +26,16 @@ the archive.
 
 Names follow DuckDB: `catalog.schema.table`. The database file passed with
 `--database-filename demo.duckdb` becomes the catalog `demo`; extra catalogs
-(another DuckDB file, a DuckLake, Postgres) are attached with init SQL.
-Privileges, masking, and row filters always refer to full names such as
-`demo.main.nasabah`.
+(another DuckDB file, a DuckLake, Postgres, a read-only [SQLite file](/sqlite))
+are attached with init SQL. Privileges, masking, and row filters always refer
+to full names such as `demo.main.nasabah`.
+
+Some scan operators — DuckLake, HNSW vector indexes, SQLite — report only a
+short table name in DuckDB's plan. The server resolves them to the full name
+before authorizing; when it cannot do so unambiguously, the statement is
+refused (fail-closed). Residency is locked after start-up: DuckDB may only
+touch `--allowed-directories`, and SQLite files must be attached in the init
+SQL.
 
 ## Policy: roles and subjects
 
@@ -52,6 +59,10 @@ effect after two different admins approve them.
 `classification.yaml` tags columns (`pii.nik`, `pii.phone`, …) and binds
 each tag to a **mask**: `partial`, `hash_hmac`, `redact`, or `null`. A
 caller sees the masked value unless one of their roles may `unmask` the tag.
+
+Vector embeddings are ordinary `FLOAT[n]` columns: similarity search is SQL
+([vector search](/vector-search)), so the same row filters and masks apply —
+a `partial` mask on a vector is applied as `redact`.
 
 ## The governance pipeline
 
@@ -111,7 +122,7 @@ server and tags them with a **channel**, recorded in the audit log:
 | (none) | Flight SQL clients: JDBC, ADBC, CLI | — |
 | `mcp` | [MCP server](/mcp) for AI agents | always applies the `ai_sandbox` limits on top of the caller's role |
 | `pgwire` | [PostgreSQL listener](/postgres) (`--pg-port`) | — |
-| `http` | [HTTP query API](/http-api) (`--http-port`) | — |
+| `http` | [HTTP query API](/http-api) and the [web UI](/web-ui) (`--http-port`) | — |
 | `sharing` | [Delta Sharing](/sharing) exports | runs as `share:<recipient>` |
 
 Scheduled [jobs](/jobs) use the in-process path too, as `job:<name>`.

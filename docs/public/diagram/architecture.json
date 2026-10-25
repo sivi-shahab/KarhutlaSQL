@@ -9,7 +9,7 @@
       "url": "https://github.com/sivi-shahab/KarhutlaSQL.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "af492be9a41099f4c6dbea01b50e0daf5f19ce6c"
+      "revision": "6f74d529b6e495b9a25c9e049cb113766470f471"
     }
   },
   "components": [
@@ -132,8 +132,8 @@
           "label": "HTTP Arrow endpoint"
         },
         {
-          "path": "internal/sharing/server.go",
-          "label": "Delta Sharing server"
+          "path": "internal/webui/webui.go",
+          "label": "embedded web UI"
         }
       ]
     },
@@ -198,7 +198,7 @@
       "id": "engine",
       "type": "backend",
       "label": "DuckDB engine",
-      "sublabel": "DuckDB 1.5.6 · duckdb-go",
+      "sublabel": "DuckDB 1.5.6 · vss · sqlite",
       "pos": [
         960,
         260
@@ -436,8 +436,8 @@
     {
       "id": "webapps",
       "type": "external",
-      "label": "Web apps & notebooks",
-      "sublabel": "apache-arrow · pyarrow",
+      "label": "Browsers & web apps",
+      "sublabel": "web UI · apache-arrow",
       "pos": [
         40,
         620
@@ -482,6 +482,30 @@
         {
           "path": "internal/flightsql/refresh.go",
           "label": "atomic refresh"
+        }
+      ]
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLite files",
+      "sublabel": "attached read-only",
+      "pos": [
+        960,
+        620
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "internal/engine/duckdb/analyze.go",
+          "label": "SQLITE_SCAN resolution"
+        },
+        {
+          "path": "docs/sqlite.md",
+          "label": "SQLite catalogs"
         }
       ]
     }
@@ -618,7 +642,7 @@
       "id": "web-gw",
       "from": "webapps",
       "to": "gateways",
-      "label": "HTTP Arrow IPC"
+      "label": "web UI · Arrow IPC"
     },
     {
       "id": "share-gw",
@@ -631,6 +655,13 @@
       "from": "jobs",
       "to": "grpc",
       "label": "job:<name>",
+      "variant": "dashed"
+    },
+    {
+      "id": "engine-sqlite",
+      "from": "engine",
+      "to": "sqlite",
+      "label": "ATTACH (read-only)",
       "variant": "dashed"
     }
   ],
@@ -674,7 +705,8 @@
         "go-oidc · golang-jwt · x/oauth2 · bcrypt",
         "Prometheus client_golang · OpenTelemetry SDK",
         "minio-go · MCP go-sdk · cobra · viper · yaml.v3",
-        "pgproto3 (pgx) · robfig/cron"
+        "pgproto3 (pgx) · robfig/cron",
+        "Vue 3 · apache-arrow JS (embedded web UI)"
       ]
     },
     {
@@ -683,7 +715,7 @@
       "items": [
         "Keycloak (OIDC IdP) · HashiCorp Vault Transit",
         "PostgreSQL 17 + MinIO for DuckLake",
-        "DuckDB extensions: ducklake · postgres_scanner · httpfs",
+        "DuckDB extensions: ducklake · postgres_scanner · httpfs · vss · sqlite",
         "Prometheus + Grafana · OTLP collector",
         "Apache Airflow + Great Expectations 1.x",
         "Unity Catalog OSS (metadata catalog)"

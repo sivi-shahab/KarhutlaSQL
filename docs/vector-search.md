@@ -61,7 +61,7 @@ SET GLOBAL hnsw_enable_experimental_persistence = true;   -- only for file-backe
 ```
 
 ```sql
--- admin or a role with write on the table
+-- admin only (see Governance below)
 CREATE INDEX dok_hnsw ON dok USING HNSW (emb) WITH (metric = 'cosine');
 ```
 
@@ -73,9 +73,12 @@ Use the same metric in the index and in the query (`cosine` ↔
 
 Vector search is ordinary SQL, so everything applies:
 
-- **Privileges** — reading the table needs `read`; creating an index needs
-  `write`. The index scan is resolved to its full table name before
-  authorization, exactly like a table scan.
+- **Privileges** — searching needs `read` on the table, with or without the
+  index; the index scan is resolved to its full table name before
+  authorization, exactly like a table scan. **Creating an HNSW index needs
+  admin**: DuckDB builds it with an extension operator, and the server only
+  lets admins run operators it does not know (fail-closed). An ordinary
+  `CREATE INDEX` without `USING HNSW` needs `write` as usual.
 - **Row filters** are applied **before** the nearest-neighbour search: a
   branch user gets the nearest rows *of their branch*. (When a row filter or
   mask applies, DuckDB may fall back to the exact search instead of the

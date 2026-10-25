@@ -61,4 +61,4 @@ and audit are shared.
 
 1. [Quick start](/guide/quick-start) — run a server and your first query.
 2. [Core concepts](/guide/concepts) — the vocabulary used in the rest of the docs.
-3. [Tutorials](/tutorials/01-first-query) — thirteen step-by-step guides.
+3. [Tutorials](/tutorials/01-first-query) — sixteen step-by-step guides.

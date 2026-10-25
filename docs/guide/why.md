@@ -66,6 +66,8 @@ driver:
 - **Web apps and notebooks** — an HTTP endpoint that streams Arrow IPC,
   readable by `apache-arrow` in the browser and `pyarrow`.
 - **AI agents** — a built-in MCP server for Claude, Copilot, and internal agents.
+- **A browser** — a built-in web UI for quick queries, table lookup, sessions,
+  query history, and jobs, with nothing to install.
 
 Whatever the entry point, the statement is governed the same way.
 
@@ -115,6 +117,11 @@ interactive and batch workloads, attach a **DuckLake** (metadata in
 Postgres, Parquet data in MinIO) and run one instance per workload class —
 with time travel for re-running a report on last month's snapshot.
 
+Bring other data in place as well: **SQLite files** from application systems
+attach read-only as extra catalogs, and **vector embeddings** stored as
+`FLOAT[n]` columns are searchable with SQL (optionally with an HNSW index) —
+both previews, both under the same governance.
+
 ### 10. Open source, permissive licenses
 
 KarhutlaSQL is Apache 2.0; every runtime dependency is Apache, MIT, or BSD
@@ -135,6 +142,8 @@ licensed and listed in `THIRD_PARTY.md`.
 | PostgreSQL & HTTP clients under the same rules | — | — | ✔ |
 | Governed sharing with outside parties | copies leave without control | — | ✔ Delta Sharing, per recipient |
 | Scheduled reports & materialized tables | — | — | ✔ built-in jobs |
+| Browser UI under the same rules | — | — | ✔ embedded web UI |
+| Vector similarity search under row filters & masking | — | — | ✔ preview |
 
 Distributed engines such as Trino offer comparable governance for very large
 clusters; KarhutlaSQL targets the opposite end — a single fast node (or a few

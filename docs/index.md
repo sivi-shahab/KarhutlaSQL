@@ -65,12 +65,28 @@ features:
     details: Cron-scheduled signed report runs and atomic materialized-table refreshes, each under its own policy-granted identity; plus PII auto-classification to find untagged columns.
     link: /tutorials/11-scheduled-jobs
     linkText: Scheduled jobs
+  - icon: 🖥️
+    title: A web UI in the box
+    details: A browser SQL editor with your readable tables, results and CSV export, sessions, query history, and jobs — embedded in the server, governed like the API.
+    link: /tutorials/14-web-ui
+    linkText: Web UI
+  - icon: 🧭
+    title: Vector search (preview)
+    details: Store embeddings as FLOAT[n] and find nearest rows with SQL, optionally accelerated by an HNSW index — under the same row filters and masking.
+    link: /tutorials/15-vector-search
+    linkText: Vector search
+  - icon: 🗂️
+    title: Query SQLite files too (preview)
+    details: Attach application SQLite files read-only as extra catalogs and join them with your warehouse, governed and audited like every other table.
+    link: /tutorials/16-sqlite
+    linkText: SQLite catalogs
 ---
 
 ## How it works
 
-Every statement — from a BI tool, a notebook, a Postgres client, a web app,
-a scheduled job, a sharing recipient, or an AI agent — takes the same path
+Every statement — from a BI tool, a notebook, a Postgres client, a web app or
+the built-in web UI, a scheduled job, a sharing recipient, or an AI agent —
+takes the same path
 through the server before it touches data:
 
 ```
@@ -86,7 +102,7 @@ Flight SQL (JDBC · ADBC · CLI)   PostgreSQL wire   HTTP Arrow   Delta Sharing 
 │ 5. Record         audit · per-column access history · metrics      │
 └────────────────────────────────────────────────────────────────────┘
    ▼
-DuckDB file  ·  DuckLake (Postgres + MinIO)  ·  WORM archive
+DuckDB file  ·  DuckLake (Postgres + MinIO)  ·  SQLite files (read-only)  ·  WORM archive
 ```
 
 The [interactive architecture diagram](/architecture) shows every component
@@ -105,5 +121,7 @@ source code.
 | Protect PII columns | [Tutorial 4: masking & RLS](/tutorials/04-masking-rls) · [auto-classification](/policy#auto-classification-finding-untagged-pii) |
 | Share tables with a regulator or partner | [Tutorial 13: Delta Sharing](/tutorials/13-delta-sharing) |
 | Schedule reports and refresh marts | [Tutorial 11: scheduled jobs](/tutorials/11-scheduled-jobs) |
+| Give people a query tool in the browser | [Tutorial 14: web UI](/tutorials/14-web-ui) |
+| Search embeddings or join SQLite files | [Tutorial 15: vector search](/tutorials/15-vector-search) · [Tutorial 16: SQLite](/tutorials/16-sqlite) |
 | Run it in production | [Installation](/install) · [Kubernetes](/deploy-k8s) · [Configuration](/config) |
 | Understand the design | [Core concepts](/guide/concepts) · [Architecture diagram](/architecture) |

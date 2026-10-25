@@ -93,6 +93,9 @@ type StatementInfo struct {
 	ReturnsRows bool
 	// Schema hasil bila bisa ditentukan tanpa eksekusi; nil bila tidak diketahui.
 	Schema *arrow.Schema
+	// ParamSchema tipe parameter ($1..$n) yang disimpulkan engine; tipe yang
+	// tidak diketahui/ambigu = utf8 (engine meng-cast teks). nil bila tanpa parameter.
+	ParamSchema *arrow.Schema
 }
 
 // Analysis hasil Engine.Analyze.

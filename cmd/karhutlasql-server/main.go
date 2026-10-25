@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow/flight"
+	fsql "github.com/apache/arrow-go/v18/arrow/flight/flightsql"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/otel"
@@ -37,6 +38,8 @@ import (
 	"go.yaml.in/yaml/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"google.golang.org/grpc/test/bufconn"
@@ -64,6 +67,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/metrics"
 	"github.com/bankmega/karhutlasql/internal/migrate"
 	"github.com/bankmega/karhutlasql/internal/objstore"
+	"github.com/bankmega/karhutlasql/internal/pgwire"
 	"github.com/bankmega/karhutlasql/internal/quota"
 	"github.com/bankmega/karhutlasql/internal/report"
 	"github.com/bankmega/karhutlasql/internal/scheduler"
@@ -319,6 +323,12 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 			mcpLis = tls.NewListener(mcpLis, tlsCfg)
 		}
 	}
+	var pgLis net.Listener // TLS ditangani pgwire (SSLRequest)
+	if cfg.PGPort != 0 {
+		if pgLis, err = lc.Listen(ctx, "tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.PGPort))); err != nil {
+			return errors.Join(fmt.Errorf("main.serve: %w", err), lis.Close())
+		}
+	}
 	var adminLis net.Listener
 	if cfg.MetricsPort != 0 {
 		if adminLis, err = lc.Listen(ctx, "tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.MetricsPort))); err != nil {
@@ -371,6 +381,19 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}
 		n += 2 // Flight SQL in-process + HTTP
 		go func() { errc <- admin.Serve(ctx, mcpLis, h, log); cancel() }()
+	}
+	if pgLis != nil {
+		pg, fc, err := newPGWire(ctx, srv, gopts, ai, sessions, tlsCfg, log, errc)
+		if err != nil {
+			cancel()
+			return errors.Join(err, pgLis.Close(), <-errc)
+		}
+		n += 2 // Flight SQL in-process + listener pgwire
+		go func() {
+			err := pg.Serve(ctx, pgLis) // kembali setelah semua koneksi selesai
+			errc <- errors.Join(err, fc.Close())
+			cancel()
+		}()
 	}
 	if jobRunner != nil {
 		if jobClient, err = inprocClient(ctx, srv, gopts, log, errc, nil); err != nil {
@@ -467,16 +490,62 @@ func newMCP(ctx context.Context, cfg config.Config, srv *flightsql.Server, gopts
 // server in-process melapor ke errc (pemanggil menambah hitungan errc).
 func inprocClient(ctx context.Context, srv *flightsql.Server, gopts server.Options, log *slog.Logger, errc chan<- error,
 	md map[string]string) (*client.Client, error) {
-	inproc := bufconn.Listen(1 << 20)
-	gopts.TLS = nil
-	go func() { errc <- server.Serve(ctx, inproc, srv, gopts, log) }()
-	cl, err := client.Dial(ctx, client.Config{Addr: "passthrough:///karhutlasql-inproc", NoLogin: true, Metadata: md,
-		DialOptions: []grpc.DialOption{grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return inproc.DialContext(ctx) })}})
+	cl, err := client.Dial(ctx, client.Config{Addr: inprocAddr, NoLogin: true, Metadata: md,
+		DialOptions: []grpc.DialOption{inprocDialer(ctx, srv, gopts, log, errc)}})
 	if err != nil {
 		return nil, err
 	}
 	go func() { <-ctx.Done(); _ = cl.Close() }()
 	return cl, nil
+}
+
+const inprocAddr = "passthrough:///karhutlasql-inproc"
+
+// inprocDialer menjalankan server gRPC di listener bufconn (tanpa TLS) dan
+// mengembalikan dialer ke sana; goroutine server melapor ke errc.
+func inprocDialer(ctx context.Context, srv *flightsql.Server, gopts server.Options, log *slog.Logger, errc chan<- error) grpc.DialOption {
+	inproc := bufconn.Listen(1 << 20)
+	gopts.TLS = nil
+	go func() { errc <- server.Serve(ctx, inproc, srv, gopts, log) }()
+	return grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return inproc.DialContext(ctx) })
+}
+
+// newPGWire listener protokol PostgreSQL (fase 9c): login password lokal
+// lewat handshake Flight (audit login, metrics, rate limit sama), atau access
+// token sebagai password; statement lewat Flight SQL in-process kanal pgwire.
+func newPGWire(ctx context.Context, srv *flightsql.Server, gopts server.Options, ai *interceptor.Auth, sessions *session.Registry,
+	tlsCfg *tls.Config, log *slog.Logger, errc chan<- error) (*pgwire.Server, *fsql.Client, error) {
+	fc, err := fsql.NewClient(inprocAddr, nil, nil, grpc.WithTransportCredentials(insecure.NewCredentials()),
+		inprocDialer(ctx, srv, gopts, log, errc))
+	if err != nil {
+		return nil, nil, fmt.Errorf("main.newPGWire: %w", err)
+	}
+	login := func(ctx context.Context, user, password string) (string, error) {
+		if strings.Count(password, ".") == 2 && strings.HasPrefix(password, "eyJ") { // JWT: access token sebagai password
+			id, err := ai.Verify(ctx, password)
+			if err != nil {
+				return "", err
+			}
+			if sessions.Revoked(id.TokenID) {
+				return "", errors.New("session killed")
+			}
+			if !strings.EqualFold(user, id.Subject) && !strings.EqualFold(user, id.Email) {
+				return "", errors.New("token does not belong to user")
+			}
+			return password, nil
+		}
+		actx, err := fc.Client.AuthenticateBasicToken(metadata.AppendToOutgoingContext(ctx, auth.ChannelHeader, pgwire.Channel), user, password)
+		if err != nil {
+			return "", err
+		}
+		md, _ := metadata.FromOutgoingContext(actx)
+		if v := md.Get("authorization"); len(v) > 0 && strings.HasPrefix(v[0], "Bearer ") {
+			return strings.TrimPrefix(v[0], "Bearer "), nil
+		}
+		return "", errors.New("no token from handshake")
+	}
+	log.Info("pgwire enabled")
+	return pgwire.New(pgwire.Config{TLS: tlsCfg, Login: login, Flight: fc, ChannelHeader: auth.ChannelHeader, Log: log}), fc, nil
 }
 
 // jobExec menjalankan statement job sebagai identitas "job:<name>" (token

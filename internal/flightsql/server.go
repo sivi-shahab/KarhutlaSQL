@@ -208,7 +208,7 @@ func (s *Server) CreatePreparedStatement(ctx context.Context, req fsql.ActionCre
 	ss.Put(handle, &prepared{sql: req.GetQuery(), info: info})
 	// DatasetSchema wajib bagi driver JDBC: tanpa itu statement dianggap update.
 	isUpdate := !info.ReturnsRows
-	return fsql.ActionCreatePreparedStatementResult{Handle: []byte(handle), DatasetSchema: info.Schema, IsUpdate: &isUpdate}, nil
+	return fsql.ActionCreatePreparedStatementResult{Handle: []byte(handle), DatasetSchema: info.Schema, ParameterSchema: info.ParamSchema, IsUpdate: &isUpdate}, nil
 }
 
 func (s *Server) ClosePreparedStatement(ctx context.Context, req fsql.ActionClosePreparedStatementRequest) error {

@@ -57,6 +57,7 @@ the secret, `*-file` flags point to a file (private keys must be 0600).
 | `--otel-insecure` | `KARHUTLASQL_OTEL_INSECURE` | `false` | OTLP without TLS (dev) |
 | `--otel-sample-ratio` | `KARHUTLASQL_OTEL_SAMPLE_RATIO` | `1` | sampling ratio for new traces (0..1); traces from clients follow the parent decision |
 | `--password-env` | `KARHUTLASQL_PASSWORD_ENV` | `KARHUTLASQL_PASSWORD` | name of the env var holding the password (plaintext or bcrypt hash) |
+| `--pg-port` | `KARHUTLASQL_PG_PORT` | `0` | PostgreSQL wire-protocol port for Postgres-only tools (psql, Power BI/Npgsql, ODBC, JDBC pg); same auth, governance and audit as Flight SQL; TLS follows gRPC; 0 = disabled |
 | `--policy-file` | `KARHUTLASQL_POLICY_FILE` | — | policy YAML (spec §5.3); empty = only the local user, as admin (dev). Reload: SIGHUP |
 | `--port` | `KARHUTLASQL_PORT` | `31337` | Flight SQL gRPC port |
 | `--print-queries` | `KARHUTLASQL_PRINT_QUERIES` | `false` | log SQL text |

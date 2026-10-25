@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -331,11 +332,75 @@ func (e *Engine) Describe(ctx context.Context, query string) (engine.StatementIn
 	if err != nil {
 		return engine.StatementInfo{}, wrap("duckdb.Describe", err)
 	}
-	info := engine.StatementInfo{NumParams: st.NumInput(), ReturnsRows: returnsRows(typ)}
+	info := engine.StatementInfo{NumParams: st.NumInput(), ReturnsRows: returnsRows(typ), ParamSchema: paramSchema(st)}
 	if typ == duckdbdrv.STATEMENT_TYPE_SELECT {
 		info.Schema = e.selectSchema(ctx, query, info.NumParams)
 	}
 	return info, nil
+}
+
+// ParamTypeKey metadata field ParameterSchema berisi tipe DuckDB asli bila
+// tipe Arrow-nya utf8 pengganti (mis. DECIMAL).
+const ParamTypeKey = "karhutla.duckdb_type"
+
+// paramSchema tipe Arrow parameter statement (1-based di DuckDB); nil bila
+// tanpa parameter.
+func paramSchema(st *duckdbdrv.Stmt) *arrow.Schema {
+	n := st.NumInput()
+	if n == 0 {
+		return nil
+	}
+	fields := make([]arrow.Field, n)
+	for i := range n {
+		t, err := st.ParamType(i + 1)
+		if err != nil {
+			t = duckdbdrv.TYPE_INVALID
+		}
+		fields[i] = arrow.Field{Name: "$" + strconv.Itoa(i+1), Type: paramArrowType(t), Nullable: true}
+		if t == duckdbdrv.TYPE_DECIMAL {
+			// utf8 tanpa presisi; tipe asli untuk klien yang butuh (pgwire → numeric).
+			fields[i].Metadata = arrow.NewMetadata([]string{ParamTypeKey}, []string{"DECIMAL"})
+		}
+	}
+	return arrow.NewSchema(fields, nil)
+}
+
+// paramArrowType: tipe sederhana dipetakan langsung; DECIMAL (presisi tidak
+// tersedia lewat API), tipe bersarang, dan tipe tak dikenal → utf8.
+func paramArrowType(t duckdbdrv.Type) arrow.DataType {
+	switch t {
+	case duckdbdrv.TYPE_BOOLEAN:
+		return arrow.FixedWidthTypes.Boolean
+	case duckdbdrv.TYPE_TINYINT:
+		return arrow.PrimitiveTypes.Int8
+	case duckdbdrv.TYPE_SMALLINT:
+		return arrow.PrimitiveTypes.Int16
+	case duckdbdrv.TYPE_INTEGER:
+		return arrow.PrimitiveTypes.Int32
+	case duckdbdrv.TYPE_BIGINT:
+		return arrow.PrimitiveTypes.Int64
+	case duckdbdrv.TYPE_UTINYINT:
+		return arrow.PrimitiveTypes.Uint8
+	case duckdbdrv.TYPE_USMALLINT:
+		return arrow.PrimitiveTypes.Uint16
+	case duckdbdrv.TYPE_UINTEGER:
+		return arrow.PrimitiveTypes.Uint32
+	case duckdbdrv.TYPE_UBIGINT:
+		return arrow.PrimitiveTypes.Uint64
+	case duckdbdrv.TYPE_FLOAT:
+		return arrow.PrimitiveTypes.Float32
+	case duckdbdrv.TYPE_DOUBLE:
+		return arrow.PrimitiveTypes.Float64
+	case duckdbdrv.TYPE_DATE:
+		return arrow.FixedWidthTypes.Date32
+	case duckdbdrv.TYPE_TIMESTAMP:
+		return &arrow.TimestampType{Unit: arrow.Microsecond}
+	case duckdbdrv.TYPE_TIMESTAMP_TZ:
+		return &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}
+	case duckdbdrv.TYPE_BLOB:
+		return arrow.BinaryTypes.Binary
+	}
+	return arrow.BinaryTypes.String
 }
 
 // selectSchema menentukan schema Arrow hasil SELECT lewat LIMIT 0 dengan semua

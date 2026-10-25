@@ -5,6 +5,7 @@ package duckdb
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -305,5 +306,22 @@ func TestSnapshot(t *testing.T) {
 	}
 	if got := count(e.Query); got[0] != "2" {
 		t.Errorf("after close: %v", got)
+	}
+}
+
+func TestDescribe_ParamSchema(t *testing.T) {
+	e := open(t, "CREATE TABLE p (i INTEGER, d DATE, s VARCHAR, x DECIMAL(10,2))")
+	got, err := e.Describe(context.Background(), "SELECT * FROM p WHERE i = $1 AND d = $2 AND s = $3 AND x > $4")
+	if err != nil || got.ParamSchema == nil {
+		t.Fatalf("describe: %+v %v", got, err)
+	}
+	want := []string{"int32", "date32", "utf8", "utf8"} // DECIMAL → utf8 (presisi tidak diketahui)
+	for i, w := range want {
+		if f := got.ParamSchema.Field(i); f.Type.String() != w || f.Name != "$"+strconv.Itoa(i+1) {
+			t.Errorf("param %d = %s %s, want %s", i+1, f.Name, f.Type, w)
+		}
+	}
+	if got, _ := e.Describe(context.Background(), "SELECT 1"); got.ParamSchema != nil {
+		t.Errorf("no params: %v", got.ParamSchema)
 	}
 }

@@ -25,6 +25,7 @@ const tutorials = [
 
 const guides = [
   { text: 'CLI client', link: '/client' },
+  { text: 'PostgreSQL protocol', link: '/postgres' },
   { text: 'Authentication', link: '/auth' },
   { text: 'Policy & governance', link: '/policy' },
   { text: 'Monitoring', link: '/monitoring' },

@@ -46,6 +46,8 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | github.com/google/jsonschema-go, github.com/segmentio/encoding, github.com/segmentio/asm | MIT | Dependensi go-sdk MCP |
 | github.com/yosida95/uritemplate/v3 | BSD-3-Clause | Dependensi go-sdk MCP |
 | google.golang.org/grpc/test/bufconn (bagian grpc) | Apache-2.0 | Listener gRPC in-process untuk MCP |
+| github.com/jackc/pgx/v5 (pgproto3; klien pgx untuk smoke test) | MIT | Listener protokol PostgreSQL (Fase 9c) |
+| github.com/jackc/pgpassfile, github.com/jackc/pgservicefile, github.com/jackc/puddle/v2 | MIT | Dependensi pgx |
 | github.com/robfig/cron/v3 | MIT | Parser jadwal cron job terjadwal (Fase 9b) |
 | github.com/zalando/go-keyring | MIT | *(belum dipakai)* token store keyring klien (E-10); Fase 5 memakai file 0600 |
 

@@ -42,6 +42,7 @@ inside the server, so they pass through exactly the same governance.
 | Data quality & catalog | Great Expectations gate, Unity Catalog OSS sync | [Data quality](/data-quality) · [Catalog](/catalog) |
 | AI | MCP server (HTTP & stdio), verified queries, semantic model; vector similarity search with HNSW index (preview) | [MCP](/mcp) · [Vector search](/vector-search) |
 | Scale-out | DuckLake multi-writer, time travel, shared kill-session | [DuckLake](/ducklake) |
+| Other sources | Read-only SQLite files as extra catalogs (preview) | [SQLite catalogs](/sqlite) |
 | Automation | Cron-scheduled signed report runs and atomic materialized-table refreshes as `job:<name>` identities | [Scheduled jobs](/jobs) |
 | Operations | Tiered backups, schema migrations, Vault Transit signing keys | [Operations](/operations) |
 

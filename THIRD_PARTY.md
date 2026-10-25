@@ -69,6 +69,7 @@ Diunduh dari `extensions.duckdb.org` saat `make docker-lake` (bukan Go module, t
 | postgres_scanner (+ libpq terbundel, PostgreSQL License) | MIT | Metadata DuckLake di Postgres |
 | httpfs | MIT | File data DuckLake di S3/MinIO |
 | vss | MIT | Indeks HNSW untuk vector search (Fase 10b, preview) |
+| sqlite_scanner (+ SQLite terbundel, public domain) | MIT | Catalog SQLite read-only (Fase 10c, preview) |
 
 ## Dev / test only
 

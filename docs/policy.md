@@ -249,6 +249,12 @@ lock cannot be reopened while the process lives (`SET
 enable_external_access`/`allowed_directories` are rejected by DuckDB). Needed
 extensions (e.g. httpfs on a dynamic build) are `LOAD`ed in the init SQL.
 
+SQLite files are the exception: the `sqlite` extension opens them through the
+SQLite library, outside DuckDB's file system, so the lock does not cover them.
+The server itself therefore rejects scans of any SQLite file that is not
+attached in the init SQL — for every identity, admins included (see
+[SQLite catalogs](/sqlite)).
+
 DuckDB secrets are only injected by the server as `TEMPORARY SECRET … SCOPE`
 from `--duckdb-secrets-file` (secret values from env, not the file):
 

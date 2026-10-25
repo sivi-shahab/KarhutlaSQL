@@ -4,12 +4,16 @@ package duckdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bankmega/karhutlasql/internal/engine"
 )
 
 func TestAnalyze(t *testing.T) {
@@ -264,5 +268,36 @@ func TestAnalyze_HNSWIndexScan(t *testing.T) {
 	}
 	if cols := a.Columns["memory.main.dok"]; !slices.Contains(cols, "emb") {
 		t.Errorf("columns = %v", a.Columns)
+	}
+}
+
+// SQLITE_SCAN: scan tabel ter-ATTACH diselesaikan ke nama lengkap; panggilan
+// sqlite_scan() langsung dibiarkan tak teresolusi (hanya admin); file yang
+// bukan catalog ter-ATTACH ditolak untuk semua (ekstensi sqlite tidak
+// tunduk pada allowed_directories).
+func TestAnalyze_SQLiteScan(t *testing.T) {
+	dir := t.TempDir()
+	app, other := filepath.Join(dir, "app.db"), filepath.Join(dir, "other.db")
+	e, err := Open(context.Background(), Config{Unlocked: true, InitSQL: "LOAD sqlite; " +
+		"ATTACH '" + app + "' AS app (TYPE sqlite); CREATE TABLE app.pelanggan (id INTEGER, nik VARCHAR); " +
+		"ATTACH '" + other + "' AS lain (TYPE sqlite); CREATE TABLE lain.pelanggan (id INTEGER); DETACH lain;"})
+	if err != nil {
+		t.Skipf("sqlite extension not available: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Close() })
+	ctx := context.Background()
+	unresolved := func(a engine.Analysis) bool {
+		return slices.ContainsFunc(a.Functions, func(f string) bool { return strings.HasPrefix(f, "UNRESOLVED_TABLE") })
+	}
+	a, err := e.Analyze(ctx, "SELECT nik FROM app.pelanggan")
+	if err != nil || !slices.Contains(a.Tables, "app.main.pelanggan") || unresolved(a) {
+		t.Fatalf("attached: %+v %v", a, err)
+	}
+	a, err = e.Analyze(ctx, "SELECT * FROM sqlite_scan('"+app+"', 'pelanggan')")
+	if err != nil || !unresolved(a) {
+		t.Fatalf("direct sqlite_scan must stay unresolved (admin only): %+v %v", a, err)
+	}
+	if _, err := e.Analyze(ctx, "SELECT * FROM sqlite_scan('"+other+"', 'pelanggan')"); !errors.Is(err, engine.ErrPermission) {
+		t.Fatalf("unattached file: %v", err)
 	}
 }

@@ -42,6 +42,7 @@ const guides = [
   { text: 'MCP server (AI agents)', link: '/mcp' },
   { text: 'DuckLake multi-writer', link: '/ducklake' },
   { text: 'Vector search (preview)', link: '/vector-search' },
+  { text: 'SQLite catalogs (preview)', link: '/sqlite' },
   { text: 'Backup, migrations & keys', link: '/operations' },
   { text: 'Kubernetes (Helm)', link: '/deploy-k8s' },
 ]

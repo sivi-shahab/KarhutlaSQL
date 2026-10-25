@@ -113,6 +113,9 @@ func (e *Engine) Analyze(ctx context.Context, query string) (engine.Analysis, er
 		if lake.index == nil && strings.Contains(p[1], `"HNSW_INDEX_SCAN"`) {
 			lake.index = planTables(ctx, c, query)
 		}
+		if lake.sqlite == nil && strings.Contains(p[1], `"SQLITE_SCAN"`) {
+			lake.sqlite = sqliteFiles(ctx, c, query)
+		}
 	}
 	for _, p := range plans { // (explain_key, explain_value)
 		var nodes []planNode
@@ -125,6 +128,11 @@ func (e *Engine) Analyze(ctx context.Context, query string) (engine.Analysis, er
 			if p[0] == "physical_plan" {
 				columns(&a, n, lake)
 			}
+		}
+	}
+	for _, f := range a.Functions {
+		if file, ok := strings.CutPrefix(f, sqliteUnattached); ok {
+			return engine.Analysis{}, fmt.Errorf("duckdb.Analyze: %w: SQLite file %q is not an attached catalog (ATTACH it in --init-sql-file)", engine.ErrPermission, file)
 		}
 	}
 	if a.Kind == "SELECT" && nparams == 0 {
@@ -183,6 +191,81 @@ func lakeTables(ctx context.Context, c *duckdbdrv.Conn, query string) map[string
 		}
 	}
 	return out
+}
+
+// sqliteScans menyelesaikan SQLITE_SCAN (EXPLAIN: Table pendek + File;
+// plan tidak bisa diserialisasi).
+type sqliteScans struct {
+	// files path file → catalog SQLite yang di-ATTACH.
+	files map[string]string
+	// direct: query memanggil sqlite_scan()/sqlite_query() langsung, atau AST
+	// tidak tersedia (bukan SELECT). Node-nya identik dengan scan tabel
+	// ter-attach, jadi scan dibiarkan tak teresolusi (hanya admin): rewrite
+	// masking bekerja pada referensi tabel, bukan pemanggilan fungsi.
+	direct bool
+}
+
+func sqliteFiles(ctx context.Context, c *duckdbdrv.Conn, query string) *sqliteScans {
+	out := &sqliteScans{files: map[string]string{}, direct: true}
+	if dbs, err := queryRows(ctx, c, "SELECT database_name, path FROM duckdb_databases() WHERE type = 'sqlite'", nil); err == nil {
+		for _, d := range dbs {
+			out.files[d[1]] = strings.ToLower(d[0])
+		}
+	}
+	rows, err := queryRows(ctx, c, "SELECT json_serialize_sql($1::VARCHAR)::VARCHAR", []any{query})
+	if err != nil || len(rows) != 1 {
+		return out
+	}
+	var ast any
+	if json.Unmarshal([]byte(rows[0][0]), &ast) != nil {
+		return out
+	}
+	if m, ok := ast.(map[string]any); ok && m["error"] != true && !callsSQLiteFunction(ast) {
+		out.direct = false
+	}
+	return out
+}
+
+// attached catalog untuk file (false bila bukan catalog SQLite ter-ATTACH).
+func (s *sqliteScans) attached(file string) (string, bool) {
+	if s == nil || file == "" {
+		return "", false
+	}
+	cat, ok := s.files[file]
+	return cat, ok
+}
+
+// sqliteUnattached penanda di Functions: SQLITE_SCAN atas file yang bukan
+// catalog ter-ATTACH. Ekstensi sqlite membuka file lewat pustaka SQLite,
+// tidak lewat filesystem DuckDB, sehingga allowed_directories (G-07) tidak
+// berlaku — Analyze menolaknya untuk semua identitas.
+const sqliteUnattached = "SQLITE_FILE_NOT_ATTACHED:"
+
+// callsSQLiteFunction: AST memuat table function sqlite_* (sqlite_scan,
+// sqlite_query, ...).
+func callsSQLiteFunction(v any) bool {
+	switch x := v.(type) {
+	case []any:
+		for _, e := range x {
+			if callsSQLiteFunction(e) {
+				return true
+			}
+		}
+	case map[string]any:
+		if x["type"] == "TABLE_FUNCTION" {
+			if fn, ok := x["function"].(map[string]any); ok {
+				if name, _ := fn["function_name"].(string); strings.HasPrefix(strings.ToLower(name), "sqlite") {
+					return true
+				}
+			}
+		}
+		for _, e := range x {
+			if callsSQLiteFunction(e) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // planTables nama tabel → nama lengkap semua LOGICAL_GET di plan logis
@@ -278,10 +361,12 @@ var lakeWrites = map[string]bool{"DUCKLAKE_INSERT": true, "DUCKLAKE_UPDATE": tru
 	"DUCKLAKE_CREATE_TABLE_AS": true, "DUCKLAKE_INLINE_DATA": true}
 
 // shortNames kandidat nama lengkap untuk scan yang hanya menulis nama tabel
-// pendek di EXPLAIN: lake (DUCKLAKE_SCAN, lihat lakeTables) dan index
-// (HNSW_INDEX_SCAN, lihat planTables).
+// pendek di EXPLAIN: lake (DUCKLAKE_SCAN, lihat lakeTables), index
+// (HNSW_INDEX_SCAN, lihat planTables), dan sqlite (SQLITE_SCAN: file →
+// catalog, lihat sqliteFiles).
 type shortNames struct {
 	lake, index map[string][]string
+	sqlite      *sqliteScans
 }
 
 // tableName nama "catalog.schema.table" dari extra_info Table; scan DuckLake
@@ -298,6 +383,13 @@ func tableName(n planNode, table string, names shortNames) string {
 		m = names.lake
 	case "HNSW_INDEX_SCAN":
 		m = names.index
+	case "SQLITE_SCAN": // SQLite hanya punya schema main
+		file, _ := n.ExtraInfo["File"].(string)
+		if names.sqlite != nil && !names.sqlite.direct {
+			if cat, ok := names.sqlite.files[file]; ok && file != "" {
+				return cat + ".main." + table
+			}
+		}
 	}
 	if l := m[table]; len(l) == 1 {
 		return l[0]
@@ -309,6 +401,12 @@ func tableName(n planNode, table string, names shortNames) string {
 // langsungnya (verifikasi rewrite).
 func (w walker) walk(n planNode, parent *planNode, inLakeWrite bool) {
 	a := w.a
+	if n.Name == "SQLITE_SCAN" {
+		file, _ := n.ExtraInfo["File"].(string)
+		if _, ok := w.lake.sqlite.attached(file); !ok {
+			addUnique(&a.Functions, sqliteUnattached+file)
+		}
+	}
 	switch table, _ := n.ExtraInfo["Table"].(string); {
 	case table != "":
 		table = tableName(n, table, w.lake)

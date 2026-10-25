@@ -23,7 +23,7 @@ be read again (`AT (VERSION => n)`) — the basis for
 
 The default static image cannot load DuckDB extensions (ADR 19). DuckLake
 uses the `lake` variant: a dynamic binary on `distroless/cc` with the
-`ducklake`, `postgres_scanner`, `httpfs`, and `vss` (vector index) extensions installed at build
+`ducklake`, `postgres_scanner`, `httpfs`, `vss` (vector index), and `sqlite_scanner` extensions installed at build
 time (the runtime never runs `INSTALL` — guardrail G-07 rejects it).
 
 ```bash

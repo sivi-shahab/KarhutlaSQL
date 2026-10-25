@@ -50,16 +50,33 @@ features:
     details: A built-in MCP server lets agents such as Claude or Copilot query data under the same privileges, masking, and ai_sandbox limits as everyone else.
     link: /tutorials/08-ai-agents-mcp
     linkText: AI agents via MCP
+  - icon: 🔌
+    title: Connect the way your tools talk
+    details: Besides Flight SQL, a PostgreSQL wire listener for psql, Power BI, and ODBC, and an HTTP endpoint that streams Arrow to web apps and notebooks — all under the same rules.
+    link: /tutorials/12-postgres-http
+    linkText: PostgreSQL & HTTP
+  - icon: 🤝
+    title: Share data with outside parties
+    details: A Delta Sharing server gives regulators and partners read-only tables through pandas, Spark, or Power BI — masked and audited per recipient, no database account needed.
+    link: /tutorials/13-delta-sharing
+    linkText: Delta Sharing
+  - icon: ⏱️
+    title: Automate reports and marts
+    details: Cron-scheduled signed report runs and atomic materialized-table refreshes, each under its own policy-granted identity; plus PII auto-classification to find untagged columns.
+    link: /tutorials/11-scheduled-jobs
+    linkText: Scheduled jobs
 ---
 
 ## How it works
 
-Every statement — from a BI tool, a notebook, or an AI agent — takes the same
-path through the server before it touches data:
+Every statement — from a BI tool, a notebook, a Postgres client, a web app,
+a scheduled job, a sharing recipient, or an AI agent — takes the same path
+through the server before it touches data:
 
 ```
-clients (JDBC · ADBC · CLI · MCP)
-   │  Flight SQL over gRPC + TLS
+Flight SQL (JDBC · ADBC · CLI)   PostgreSQL wire   HTTP Arrow   Delta Sharing   MCP   jobs
+   │                                   │                │            │           │      │
+   └─────────────── all become Flight SQL statements with the caller's identity ────────┘
    ▼
 ┌─ karhutlasql-server ──────────────────────────────────────────────┐
 │ 1. Authenticate   local password / OIDC token, session, rate limit │
@@ -73,8 +90,9 @@ DuckDB file  ·  DuckLake (Postgres + MinIO)  ·  WORM archive
 ```
 
 The [interactive architecture diagram](/architecture) shows every component
-and integration (Keycloak, Vault, Great Expectations, Unity Catalog) with
-links to the source code.
+and integration (Keycloak, Vault, Great Expectations, Unity Catalog, the
+PostgreSQL and HTTP listeners, Delta Sharing, scheduled jobs) with links to the
+source code.
 
 ## Choose your path
 
@@ -83,6 +101,9 @@ links to the source code.
 | Decide whether KarhutlaSQL fits my team | [Why KarhutlaSQL?](/guide/why) |
 | Try it on my laptop in five minutes | [Quick start](/guide/quick-start) |
 | Connect Python, DBeaver, or an application | [Tutorial 2](/tutorials/02-python) · [Tutorial 3](/tutorials/03-jdbc-bi-tools) |
-| Protect PII columns | [Tutorial 4: masking & RLS](/tutorials/04-masking-rls) |
+| Connect psql, Power BI, ODBC, or a web app | [Tutorial 12: PostgreSQL & HTTP](/tutorials/12-postgres-http) |
+| Protect PII columns | [Tutorial 4: masking & RLS](/tutorials/04-masking-rls) · [auto-classification](/policy#auto-classification-finding-untagged-pii) |
+| Share tables with a regulator or partner | [Tutorial 13: Delta Sharing](/tutorials/13-delta-sharing) |
+| Schedule reports and refresh marts | [Tutorial 11: scheduled jobs](/tutorials/11-scheduled-jobs) |
 | Run it in production | [Installation](/install) · [Kubernetes](/deploy-k8s) · [Configuration](/config) |
 | Understand the design | [Core concepts](/guide/concepts) · [Architecture diagram](/architecture) |

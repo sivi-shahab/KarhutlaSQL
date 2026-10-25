@@ -126,6 +126,7 @@ Clean up: `docker compose -f deploy/compose/compose.yaml --profile lake down -v`
 
 ## Next
 
+[11. Scheduled jobs & materialized tables →](/tutorials/11-scheduled-jobs)
+
 For production, run one Helm release per workload class with the same
-`ducklake.*` values: [Kubernetes (Helm) →](/deploy-k8s). Or revisit the design in
-[Core concepts](/guide/concepts).
+`ducklake.*` values: [Kubernetes (Helm)](/deploy-k8s).

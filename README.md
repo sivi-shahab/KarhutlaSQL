@@ -10,22 +10,26 @@ A lightweight analytical SQL server: **Apache Arrow Flight SQL** on top of **Duc
 
 | Area | Features |
 |---|---|
-| Protocol | Arrow Flight SQL (compatible with JDBC, ADBC, Ibis, Superset, Grafana) |
+| Protocols | Arrow Flight SQL (JDBC, ADBC, Ibis, Superset, Grafana); PostgreSQL wire protocol for psql, Power BI/Npgsql, ODBC (`--pg-port`); HTTP Arrow IPC endpoint for web apps and notebooks (`--http-port`) — all through the same governance |
+| Data sharing | Delta Sharing server for read-only sharing with regulators and partners (pandas, Spark, Power BI clients), governed and audited per recipient (`--sharing-file`) |
 | Engine | DuckDB (file / in-memory), init SQL for extensions & ATTACH; multi-writer DuckLake (Postgres + MinIO) with one instance per workload class |
 | Auth | Password → JWT, SSO/OIDC via JWKS, email/domain/group allow-list, TLS & mTLS |
 | Authz | Default-deny object privileges (catalog/schema/table/column), YAML policy, hot reload, four-eyes approval |
-| Governance | SQL rewriter: tag-based column masking, row-level security, `ai_sandbox` profile (SELECT-only + LIMIT) |
+| Governance | SQL rewriter: tag-based column masking, row-level security, `ai_sandbox` profile (SELECT-only + LIMIT); PII auto-classification suggests tags for untagged columns (`karhutla_classify_scan()`) |
 | Compliance | Per-column PII access history → WORM Parquet (10-year retention, DSAR export), residency guardrail, signed report runs for regulatory reporting (OJK/SLIK) with DuckLake snapshot time travel |
 | Workload control | Session registry, kill session, resource groups & statement queuing, rate limits, query timeouts, admin via Flight DoAction |
 | Observability | Prometheus `/metrics` + `karhutla_metrics()`, `karhutla_query_history()`, slow-query log, JSON audit log |
 | AI agents | MCP server (stdio + Streamable HTTP/OAuth) with the `ai_sandbox` profile enforced, verified queries + semantic model |
-| Operations | Bulk ingest (`adbc_ingest`), tiered backups to the WORM archive, versioned schema migrations, signing keys in Vault/HSM |
+| Operations | Bulk ingest (`adbc_ingest`), tiered backups to the WORM archive, versioned schema migrations, signing keys in Vault/HSM; scheduled jobs (cron) for signed reports and atomic materialized-table refreshes (`--jobs-file`) |
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     clients["BI & ADBC clients<br/>Superset · Grafana · JDBC/ADBC"]
+    pgclients["Postgres-only tools<br/>psql · Power BI · ODBC"]
+    webapps["Web apps & notebooks<br/>apache-arrow · pyarrow"]
+    recipients["Sharing recipients<br/>regulator · partners"]
     agents["AI agents<br/>Claude · Copilot via MCP"]
     gx["Airflow + GX<br/>Great Expectations"]
     idp["OIDC IdP<br/>Keycloak · go-oidc · JWT"]
@@ -34,6 +38,9 @@ flowchart LR
     uc["Unity Catalog OSS<br/>metadata catalog (REST)"]
     subgraph srv["karhutlasql-server process (per instance / workload class)"]
         grpc["Flight SQL server<br/>arrow-go Flight SQL · grpc-go"]
+        pgwire["PostgreSQL listener<br/>pgproto3 · --pg-port"]
+        httpapi["HTTP API & Delta Sharing<br/>Arrow IPC · Parquet · --http-port"]
+        jobs["Scheduled jobs<br/>cron · report · refresh"]
         mcp["MCP server<br/>MCP go-sdk · HTTP / stdio"]
         gov["Governance<br/>pg_query_go · policy YAML"]
         exec["Execution<br/>queues · quotas · result cache"]
@@ -45,6 +52,12 @@ flowchart LR
     archive[("WORM archive<br/>MinIO / S3 · Parquet")]
 
     clients -- Flight SQL --> grpc
+    pgclients -- Postgres wire --> pgwire
+    webapps -- "POST /api/v1/query" --> httpapi
+    recipients -- Delta Sharing --> httpapi
+    pgwire -. in-process Flight SQL .-> grpc
+    httpapi -. in-process Flight SQL .-> grpc
+    jobs -. "in-process as job identity" .-> grpc
     agents -- MCP --> mcp
     gx -- dq_snapshot · dq_publish --> grpc
     mcp -. gRPC in-process .-> grpc

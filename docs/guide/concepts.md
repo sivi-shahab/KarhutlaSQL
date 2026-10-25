@@ -10,6 +10,13 @@ access token comes from your IdP (Keycloak, Entra ID, Okta). OIDC identities
 carry **claims** — username, email, groups, and custom attributes such as
 `branch` or `department`.
 
+Two kinds of **internal identities** exist only inside the server and can
+never log in: `job:<name>` for [scheduled jobs](/jobs) and
+`share:<recipient>` for [Delta Sharing](/sharing) recipients. They get
+privileges exactly like local users — through `policy.yaml` subjects such as
+`match: { user: "job:mart_saldo" }` — so what a job or a recipient may read is
+reviewed and approved like any other policy change.
+
 Logging in creates a **session** (one per token). Sessions are visible in
 `karhutla_sessions()` and can be **killed** by an admin; the kill cancels
 running statements and revokes the token — on every instance that shares
@@ -82,18 +89,34 @@ development) where the server writes tamper-evident records:
 | `backups/` | Tiered backups with signed `backup.json` |
 | `revocations/` | Kill-session records shared across instances |
 
+Delta Sharing exports are not archived: they are temporary Parquet files in
+`--sharing-dir`, deleted when their signed URL expires. The access history
+records what each recipient read.
+
 ## Audit log
 
 A JSON line per security-relevant event (`statement_end`, `authz_deny`,
-`session_killed`, `policy_change`, `report_run`, …), written to
+`session_killed`, `policy_change`, `report_run`, `job_run`, `share_query`,
+`classification_scan`, …), written to
 `--audit-log-dir` or stdout. By default it stores only the SHA-256 of SQL
 text; `--audit-log-sql` includes the text.
 
 ## Channels
 
-Requests that come through the **MCP** server are tagged with the `mcp`
-channel, which always applies the `ai_sandbox` limits on top of the caller's
-own role.
+Every entry point turns requests into Flight SQL statements inside the
+server and tags them with a **channel**, recorded in the audit log:
+
+| Channel | Entry point | Extra behaviour |
+|---|---|---|
+| (none) | Flight SQL clients: JDBC, ADBC, CLI | — |
+| `mcp` | [MCP server](/mcp) for AI agents | always applies the `ai_sandbox` limits on top of the caller's role |
+| `pgwire` | [PostgreSQL listener](/postgres) (`--pg-port`) | — |
+| `http` | [HTTP query API](/http-api) (`--http-port`) | — |
+| `sharing` | [Delta Sharing](/sharing) exports | runs as `share:<recipient>` |
+
+Scheduled [jobs](/jobs) use the in-process path too, as `job:<name>`.
+Channels never widen access: a statement is authorized for the identity
+behind it, whatever the channel.
 
 ## Next
 

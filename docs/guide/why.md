@@ -46,6 +46,8 @@ KarhutlaSQL produces that evidence as a side effect of normal use:
 | Can you prove this regulatory report was not altered? | Signed report runs: Parquet result + manifest with table fingerprints, SQL hashes, and an Ed25519 signature anyone can verify offline |
 | Was the data validated before reporting? | A Great Expectations gate: a report refuses to run on data whose latest validation failed or is stale |
 | Who approved this policy change? | Four-eyes approval for policy and classification changes, recorded in the audit log |
+| Are there PII columns nobody classified? | `karhutla_classify_scan()` suggests tags for untagged NIK, NPWP, phone, e-mail, card, and account columns — without revealing values |
+| What exactly did we send to the regulator? | Delta Sharing exports run as the recipient's own identity, masked per policy, with every read in the access history and audit log |
 
 The [research report](/research/fitur-lanjutan) maps these controls to
 POJK 11/2022, SEOJK 29/2022, and Law 27/2022 (UU PDP).
@@ -59,7 +61,13 @@ driver:
 - **ADBC** — Python (pandas, Polars, PyArrow), Go, R, and more, receiving
   columnar Arrow data with no row conversion.
 - **CLI** — `karhutlasql-client` with SSO login, CSV/JSON output, and scripts.
+- **PostgreSQL clients** — psql, Power BI's PostgreSQL connector, ODBC, and
+  Postgres drivers through the optional PostgreSQL wire listener.
+- **Web apps and notebooks** — an HTTP endpoint that streams Arrow IPC,
+  readable by `apache-arrow` in the browser and `pyarrow`.
 - **AI agents** — a built-in MCP server for Claude, Copilot, and internal agents.
+
+Whatever the entry point, the statement is governed the same way.
 
 ### 4. One binary, built for on-prem and air-gapped sites
 
@@ -78,21 +86,36 @@ chargeback, rate limits, query timeouts, a per-identity result cache,
 Prometheus metrics, OpenTelemetry traces, kill-session that propagates to
 every instance, tiered backups, and versioned schema migrations.
 
-### 6. AI agents under the same rules
+### 6. Share with outside parties without giving them a database
+
+Regulators, partners, and other divisions receive read-only tables through
+the open **Delta Sharing** protocol and their own pandas, Spark, or Power BI
+connector — no database account, no VPN to the gRPC port. Each recipient is
+an identity in your policy, so what they receive is masked and filtered for
+them, and every read is on record.
+
+### 7. Reports and marts that run themselves
+
+Cron-scheduled **jobs** run signed report runs (for example the monthly OJK
+report) and rebuild materialized tables atomically — each as its own
+`job:<name>` identity with exactly the privileges the policy grants it, and
+no external scheduler to secure.
+
+### 8. AI agents under the same rules
 
 An AI agent connected over MCP gets **exactly** the privileges and masking of
 the identity it runs as — plus the stricter `ai_sandbox` limits (SELECT
 only, row/byte/time caps). Verified queries and a semantic model give agents
 trusted SQL for common business questions instead of guessing.
 
-### 7. Scales out when you need it
+### 9. Scales out when you need it
 
 Start with a single DuckDB file. When you need several writers or separate
 interactive and batch workloads, attach a **DuckLake** (metadata in
 Postgres, Parquet data in MinIO) and run one instance per workload class —
 with time travel for re-running a report on last month's snapshot.
 
-### 8. Open source, permissive licenses
+### 10. Open source, permissive licenses
 
 KarhutlaSQL is Apache 2.0; every runtime dependency is Apache, MIT, or BSD
 licensed and listed in `THIRD_PARTY.md`.
@@ -109,6 +132,9 @@ licensed and listed in `THIRD_PARTY.md`.
 | Signed, re-verifiable reports | — | — | ✔ |
 | Queues, quotas, kill session | — | partial | ✔ |
 | AI agent access under the same rules | — | — | ✔ MCP |
+| PostgreSQL & HTTP clients under the same rules | — | — | ✔ |
+| Governed sharing with outside parties | copies leave without control | — | ✔ Delta Sharing, per recipient |
+| Scheduled reports & materialized tables | — | — | ✔ built-in jobs |
 
 Distributed engines such as Trino offer comparable governance for very large
 clusters; KarhutlaSQL targets the opposite end — a single fast node (or a few

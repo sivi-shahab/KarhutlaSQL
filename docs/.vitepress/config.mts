@@ -21,6 +21,9 @@ const tutorials = [
   { text: '8. AI agents via MCP', link: '/tutorials/08-ai-agents-mcp' },
   { text: '9. Monitoring & session control', link: '/tutorials/09-monitoring' },
   { text: '10. Multi-instance DuckLake', link: '/tutorials/10-ducklake' },
+  { text: '11. Scheduled jobs & materialized tables', link: '/tutorials/11-scheduled-jobs' },
+  { text: '12. PostgreSQL & HTTP clients', link: '/tutorials/12-postgres-http' },
+  { text: '13. Share data with Delta Sharing', link: '/tutorials/13-delta-sharing' },
 ]
 
 const guides = [

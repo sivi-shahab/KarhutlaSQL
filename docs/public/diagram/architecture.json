@@ -9,7 +9,7 @@
       "url": "https://github.com/sivi-shahab/KarhutlaSQL.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "ad2abd5a63444dd0e6b15b1eb74388972c9050b7"
+      "revision": "af492be9a41099f4c6dbea01b50e0daf5f19ce6c"
     }
   },
   "components": [
@@ -57,7 +57,7 @@
       "label": "IdP OIDC",
       "sublabel": "Keycloak · go-oidc · JWT",
       "pos": [
-        300,
+        270,
         80
       ],
       "size": [
@@ -85,7 +85,7 @@
       "label": "Flight SQL server",
       "sublabel": "arrow-go Flight SQL · grpc-go",
       "pos": [
-        300,
+        270,
         260
       ],
       "size": [
@@ -109,12 +109,12 @@
       ]
     },
     {
-      "id": "mcp",
+      "id": "gateways",
       "type": "backend",
-      "label": "MCP server",
-      "sublabel": "MCP go-sdk · HTTP / stdio",
+      "label": "Protocol gateways",
+      "sublabel": "MCP · Postgres · HTTP · Sharing",
       "pos": [
-        300,
+        270,
         440
       ],
       "size": [
@@ -124,12 +124,16 @@
       "tag": "profil ai_sandbox",
       "sources": [
         {
-          "path": "internal/mcp/mcp.go",
-          "label": "MCP tools"
+          "path": "internal/pgwire/server.go",
+          "label": "PostgreSQL listener"
         },
         {
-          "path": "internal/mcp/http.go",
-          "label": "transport HTTP"
+          "path": "internal/httpapi/httpapi.go",
+          "label": "HTTP Arrow endpoint"
+        },
+        {
+          "path": "internal/sharing/server.go",
+          "label": "Delta Sharing server"
         }
       ]
     },
@@ -139,7 +143,7 @@
       "label": "Governance",
       "sublabel": "pg_query_go · policy YAML",
       "pos": [
-        580,
+        500,
         260
       ],
       "size": [
@@ -168,7 +172,7 @@
       "label": "Execution",
       "sublabel": "queues · quotas · result cache",
       "pos": [
-        860,
+        730,
         260
       ],
       "size": [
@@ -196,7 +200,7 @@
       "label": "DuckDB engine",
       "sublabel": "DuckDB 1.5.6 · duckdb-go",
       "pos": [
-        1140,
+        960,
         260
       ],
       "size": [
@@ -224,7 +228,7 @@
       "label": "DuckDB file",
       "sublabel": "warehouse.duckdb",
       "pos": [
-        1140,
+        960,
         80
       ],
       "size": [
@@ -244,7 +248,7 @@
       "label": "DuckLake",
       "sublabel": "DuckLake · Postgres · MinIO",
       "pos": [
-        1140,
+        960,
         440
       ],
       "size": [
@@ -273,7 +277,7 @@
       "label": "Observability",
       "sublabel": "Prometheus · Grafana · OTel",
       "pos": [
-        860,
+        730,
         80
       ],
       "size": [
@@ -297,7 +301,7 @@
       "label": "Reports & operations",
       "sublabel": "report · backup · DQ · UC sync",
       "pos": [
-        580,
+        500,
         440
       ],
       "size": [
@@ -325,7 +329,7 @@
       "label": "WORM archive",
       "sublabel": "MinIO / S3 · Parquet WORM",
       "pos": [
-        860,
+        730,
         440
       ],
       "size": [
@@ -353,7 +357,7 @@
       "label": "Vault Transit",
       "sublabel": "HashiCorp Vault · Ed25519",
       "pos": [
-        580,
+        500,
         620
       ],
       "size": [
@@ -401,7 +405,7 @@
       "label": "Unity Catalog OSS",
       "sublabel": "Unity Catalog OSS · REST",
       "pos": [
-        300,
+        730,
         620
       ],
       "size": [
@@ -414,6 +418,72 @@
           "label": "metadata sync"
         }
       ]
+    },
+    {
+      "id": "pgtools",
+      "type": "external",
+      "label": "Postgres tools",
+      "sublabel": "psql · Power BI · ODBC",
+      "pos": [
+        270,
+        620
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "webapps",
+      "type": "external",
+      "label": "Web apps & notebooks",
+      "sublabel": "apache-arrow · pyarrow",
+      "pos": [
+        40,
+        620
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "recipients",
+      "type": "external",
+      "label": "Sharing recipients",
+      "sublabel": "regulator · partners",
+      "pos": [
+        40,
+        800
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "jobs",
+      "type": "backend",
+      "label": "Scheduled jobs",
+      "sublabel": "cron · reports · refresh",
+      "pos": [
+        500,
+        80
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "internal/jobs/jobs.go",
+          "label": "cron runner"
+        },
+        {
+          "path": "internal/flightsql/refresh.go",
+          "label": "atomic refresh"
+        }
+      ]
     }
   ],
   "boundaries": [
@@ -422,11 +492,12 @@
       "label": "karhutlasql-server process (per instance / workload class)",
       "wraps": [
         "grpc",
-        "mcp",
+        "gateways",
         "gov",
         "exec",
         "engine",
-        "ops"
+        "ops",
+        "jobs"
       ]
     }
   ],
@@ -441,7 +512,7 @@
     {
       "id": "agent-mcp",
       "from": "agents",
-      "to": "mcp",
+      "to": "gateways",
       "label": "MCP"
     },
     {
@@ -453,9 +524,9 @@
     },
     {
       "id": "mcp-loopback",
-      "from": "mcp",
+      "from": "gateways",
       "to": "grpc",
-      "label": "gRPC in-process",
+      "label": "in-process Flight SQL",
       "variant": "dashed"
     },
     {
@@ -536,6 +607,31 @@
       "to": "uc",
       "label": "sync metadata (REST)",
       "variant": "dashed"
+    },
+    {
+      "id": "pg-gw",
+      "from": "pgtools",
+      "to": "gateways",
+      "label": "Postgres wire"
+    },
+    {
+      "id": "web-gw",
+      "from": "webapps",
+      "to": "gateways",
+      "label": "HTTP Arrow IPC"
+    },
+    {
+      "id": "share-gw",
+      "from": "recipients",
+      "to": "gateways",
+      "label": "Delta Sharing"
+    },
+    {
+      "id": "jobs-grpc",
+      "from": "jobs",
+      "to": "grpc",
+      "label": "job:<name>",
+      "variant": "dashed"
     }
   ],
   "cards": [
@@ -545,7 +641,8 @@
       "items": [
         "Default-deny per-table privileges (policy YAML)",
         "Tag-based column masking & RLS via AST rewrite",
-        "MCP channel always capped by the ai_sandbox profile"
+        "MCP channel always capped by the ai_sandbox profile",
+        "Every gateway and job runs as a Flight SQL statement"
       ]
     },
     {
@@ -576,7 +673,8 @@
         "pg_query_go (PostgreSQL parser) for authz & rewrite",
         "go-oidc · golang-jwt · x/oauth2 · bcrypt",
         "Prometheus client_golang · OpenTelemetry SDK",
-        "minio-go · MCP go-sdk · cobra · viper · yaml.v3"
+        "minio-go · MCP go-sdk · cobra · viper · yaml.v3",
+        "pgproto3 (pgx) · robfig/cron"
       ]
     },
     {

@@ -61,6 +61,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/engine"
 	"github.com/bankmega/karhutlasql/internal/engine/duckdb"
 	"github.com/bankmega/karhutlasql/internal/flightsql"
+	"github.com/bankmega/karhutlasql/internal/httpapi"
 	"github.com/bankmega/karhutlasql/internal/interceptor"
 	"github.com/bankmega/karhutlasql/internal/jobs"
 	"github.com/bankmega/karhutlasql/internal/mcp"
@@ -329,6 +330,15 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 			return errors.Join(fmt.Errorf("main.serve: %w", err), lis.Close())
 		}
 	}
+	var httpLis net.Listener
+	if cfg.HTTPPort != 0 {
+		if httpLis, err = lc.Listen(ctx, "tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.HTTPPort))); err != nil {
+			return errors.Join(fmt.Errorf("main.serve: %w", err), lis.Close())
+		}
+		if tlsCfg != nil {
+			httpLis = tls.NewListener(httpLis, tlsCfg)
+		}
+	}
 	var adminLis net.Listener
 	if cfg.MetricsPort != 0 {
 		if adminLis, err = lc.Listen(ctx, "tcp", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.MetricsPort))); err != nil {
@@ -391,6 +401,22 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		n += 2 // Flight SQL in-process + listener pgwire
 		go func() {
 			err := pg.Serve(ctx, pgLis) // kembali setelah semua koneksi selesai
+			errc <- errors.Join(err, fc.Close())
+			cancel()
+		}()
+	}
+	if httpLis != nil {
+		fc, err := inprocFlight(ctx, srv, gopts, log, errc)
+		if err != nil {
+			cancel()
+			return errors.Join(err, httpLis.Close(), <-errc)
+		}
+		h := httpapi.Handler(httpapi.Config{Login: flightLogin(fc, httpapi.Channel), Flight: fc, ChannelHeader: auth.ChannelHeader,
+			AllowedOrigins: cfg.HTTPAllowedOrigins, Log: log})
+		n += 2 // Flight SQL in-process + HTTP
+		log.Info("http query endpoint enabled", "port", cfg.HTTPPort, "allowed_origins", cfg.HTTPAllowedOrigins)
+		go func() {
+			err := admin.Serve(ctx, httpLis, h, log) // kembali setelah request selesai (shutdown)
 			errc <- errors.Join(err, fc.Close())
 			cancel()
 		}()
@@ -515,11 +541,11 @@ func inprocDialer(ctx context.Context, srv *flightsql.Server, gopts server.Optio
 // token sebagai password; statement lewat Flight SQL in-process kanal pgwire.
 func newPGWire(ctx context.Context, srv *flightsql.Server, gopts server.Options, ai *interceptor.Auth, sessions *session.Registry,
 	tlsCfg *tls.Config, log *slog.Logger, errc chan<- error) (*pgwire.Server, *fsql.Client, error) {
-	fc, err := fsql.NewClient(inprocAddr, nil, nil, grpc.WithTransportCredentials(insecure.NewCredentials()),
-		inprocDialer(ctx, srv, gopts, log, errc))
+	fc, err := inprocFlight(ctx, srv, gopts, log, errc)
 	if err != nil {
-		return nil, nil, fmt.Errorf("main.newPGWire: %w", err)
+		return nil, nil, err
 	}
+	basic := flightLogin(fc, pgwire.Channel)
 	login := func(ctx context.Context, user, password string) (string, error) {
 		if strings.Count(password, ".") == 2 && strings.HasPrefix(password, "eyJ") { // JWT: access token sebagai password
 			id, err := ai.Verify(ctx, password)
@@ -534,7 +560,28 @@ func newPGWire(ctx context.Context, srv *flightsql.Server, gopts server.Options,
 			}
 			return password, nil
 		}
-		actx, err := fc.Client.AuthenticateBasicToken(metadata.AppendToOutgoingContext(ctx, auth.ChannelHeader, pgwire.Channel), user, password)
+		return basic(ctx, user, password)
+	}
+	log.Info("pgwire enabled")
+	return pgwire.New(pgwire.Config{TLS: tlsCfg, Login: login, Flight: fc, ChannelHeader: auth.ChannelHeader, Log: log}), fc, nil
+}
+
+// inprocFlight klien Flight SQL mentah (arrow-go) ke server ini lewat
+// listener in-process; pemanggil menutupnya setelah listener-nya berhenti.
+func inprocFlight(ctx context.Context, srv *flightsql.Server, gopts server.Options, log *slog.Logger, errc chan<- error) (*fsql.Client, error) {
+	fc, err := fsql.NewClient(inprocAddr, nil, nil, grpc.WithTransportCredentials(insecure.NewCredentials()),
+		inprocDialer(ctx, srv, gopts, log, errc))
+	if err != nil {
+		return nil, fmt.Errorf("main.inprocFlight: %w", err)
+	}
+	return fc, nil
+}
+
+// flightLogin login password lokal lewat handshake Flight Basic (audit
+// login, metrics, rate limit sama dengan klien Flight) → bearer token.
+func flightLogin(fc *fsql.Client, channel string) func(ctx context.Context, user, password string) (string, error) {
+	return func(ctx context.Context, user, password string) (string, error) {
+		actx, err := fc.Client.AuthenticateBasicToken(metadata.AppendToOutgoingContext(ctx, auth.ChannelHeader, channel), user, password)
 		if err != nil {
 			return "", err
 		}
@@ -544,8 +591,6 @@ func newPGWire(ctx context.Context, srv *flightsql.Server, gopts server.Options,
 		}
 		return "", errors.New("no token from handshake")
 	}
-	log.Info("pgwire enabled")
-	return pgwire.New(pgwire.Config{TLS: tlsCfg, Login: login, Flight: fc, ChannelHeader: auth.ChannelHeader, Log: log}), fc, nil
 }
 
 // jobExec menjalankan statement job sebagai identitas "job:<name>" (token

@@ -86,7 +86,10 @@ type Config struct {
 	// MCP (Fase 8c): port 0 = mati.
 	MCPPort int
 	// Listener protokol PostgreSQL (backlog fase 9c); 0 = mati.
-	PGPort              int
+	PGPort int
+	// Endpoint HTTP Arrow IPC (backlog fase 9d); 0 = mati.
+	HTTPPort            int
+	HTTPAllowedOrigins  []string
 	MCPResourceURL      string
 	MCPMaxRows          int
 	VerifiedQueriesFile string
@@ -181,6 +184,8 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.String("vault-token-file", "", "Vault token file (e.g. a Vault Agent sink, 0600; re-read on every signature); empty = env VAULT_TOKEN")
 	fs.String("migrations-dir", "", "directory of <version>_<name>.sql schema migrations applied at startup (once, in order, one transaction per file)")
 	fs.String("migrations-catalog", "", "catalog of the karhutla_schema_migrations tracking table; empty = default catalog")
+	fs.Int("http-port", 0, "HTTP Arrow IPC query endpoint port (POST /api/v1/query, Bearer or Basic; TLS follows gRPC) for web apps and notebooks; 0 = disabled")
+	fs.StringSlice("http-allowed-origins", nil, "browser origins allowed to call the HTTP query endpoint (CORS), e.g. https://dash.bank.local; empty = no CORS")
 	fs.Int("pg-port", 0, "PostgreSQL wire-protocol port for Postgres-only tools (psql, Power BI/Npgsql, ODBC, JDBC pg); same auth, governance and audit as Flight SQL; TLS follows gRPC; 0 = disabled")
 	fs.Int("mcp-port", 0, "MCP Streamable HTTP server port (/mcp, Bearer token; TLS follows gRPC) for AI agents; 0 = disabled")
 	fs.String("mcp-resource-url", "", "public URL of the MCP endpoint (e.g. https://kq.bank.local:8443/mcp) for RFC 9728 OAuth metadata; empty = no metadata")
@@ -282,6 +287,8 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		MigrationsCatalog:        v.GetString("migrations-catalog"),
 		MCPPort:                  v.GetInt("mcp-port"),
 		PGPort:                   v.GetInt("pg-port"),
+		HTTPPort:                 v.GetInt("http-port"),
+		HTTPAllowedOrigins:       v.GetStringSlice("http-allowed-origins"),
 		MCPResourceURL:           v.GetString("mcp-resource-url"),
 		MCPMaxRows:               v.GetInt("mcp-max-rows"),
 		VerifiedQueriesFile:      v.GetString("verified-queries-file"),
@@ -365,8 +372,8 @@ func (c Config) validate() error {
 	if c.ReportSigningVaultKey != "" && c.ReportSigningKeyFile != "" {
 		errs = append(errs, errors.New("report-signing-vault-key and report-signing-key-file are mutually exclusive"))
 	}
-	if c.PGPort < 0 || c.PGPort > 65535 {
-		errs = append(errs, errors.New("pg-port must be 0..65535"))
+	if c.PGPort < 0 || c.PGPort > 65535 || c.HTTPPort < 0 || c.HTTPPort > 65535 {
+		errs = append(errs, errors.New("pg-port and http-port must be 0..65535"))
 	}
 	if c.MCPPort < 0 || c.MCPPort > 65535 || c.MCPMaxRows <= 0 {
 		errs = append(errs, errors.New("mcp-port must be 0..65535 and mcp-max-rows > 0"))

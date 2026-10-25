@@ -34,6 +34,8 @@ the secret, `*-file` flags point to a file (private keys must be 0600).
 | `--four-eyes` | `KARHUTLASQL_FOUR_EYES` | `true` | policy/classification changes take effect after 2 approvals by different admins (G-11) |
 | `--health-check-query` | `KARHUTLASQL_HEALTH_CHECK_QUERY` | `SELECT 1` | query for gRPC health and /healthz |
 | `--host` | `KARHUTLASQL_HOST` | `0.0.0.0` | listen address |
+| `--http-allowed-origins` | `KARHUTLASQL_HTTP_ALLOWED_ORIGINS` | — | browser origins allowed to call the HTTP query endpoint (CORS), e.g. https://dash.bank.local; empty = no CORS |
+| `--http-port` | `KARHUTLASQL_HTTP_PORT` | `0` | HTTP Arrow IPC query endpoint port (POST /api/v1/query, Bearer or Basic; TLS follows gRPC) for web apps and notebooks; 0 = disabled |
 | `--init-sql-file` | `KARHUTLASQL_INIT_SQL_FILE` | — | SQL file executed at startup (INSTALL/LOAD/ATTACH) |
 | `--jobs-file` | `KARHUTLASQL_JOBS_FILE` | — | YAML of scheduled jobs (cron): signed report runs and materialized table refreshes, each run as identity job:&lt;name&gt; granted via policy subjects; needs --policy-file |
 | `--jwt-private-key-file` | `KARHUTLASQL_JWT_PRIVATE_KEY_FILE` | — | RSA PEM key (0600) for RS256; replaces HS256 |

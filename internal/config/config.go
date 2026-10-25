@@ -88,8 +88,10 @@ type Config struct {
 	// Listener protokol PostgreSQL (backlog fase 9c); 0 = mati.
 	PGPort int
 	// Endpoint HTTP Arrow IPC (backlog fase 9d); 0 = mati.
-	HTTPPort            int
-	HTTPAllowedOrigins  []string
+	HTTPPort           int
+	HTTPAllowedOrigins []string
+	// Web UI di "/" pada --http-port (fase 10a).
+	HTTPUI              bool
 	MCPResourceURL      string
 	MCPMaxRows          int
 	VerifiedQueriesFile string
@@ -190,6 +192,7 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.String("migrations-dir", "", "directory of <version>_<name>.sql schema migrations applied at startup (once, in order, one transaction per file)")
 	fs.String("migrations-catalog", "", "catalog of the karhutla_schema_migrations tracking table; empty = default catalog")
 	fs.Int("http-port", 0, "HTTP Arrow IPC query endpoint port (POST /api/v1/query, Bearer or Basic; TLS follows gRPC) for web apps and notebooks; 0 = disabled")
+	fs.Bool("http-ui", true, "serve the web UI (SQL editor, tables, sessions, history, jobs) at / on --http-port")
 	fs.StringSlice("http-allowed-origins", nil, "browser origins allowed to call the HTTP query endpoint (CORS), e.g. https://dash.bank.local; empty = no CORS")
 	fs.Int("pg-port", 0, "PostgreSQL wire-protocol port for Postgres-only tools (psql, Power BI/Npgsql, ODBC, JDBC pg); same auth, governance and audit as Flight SQL; TLS follows gRPC; 0 = disabled")
 	fs.Int("mcp-port", 0, "MCP Streamable HTTP server port (/mcp, Bearer token; TLS follows gRPC) for AI agents; 0 = disabled")
@@ -298,6 +301,7 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		PGPort:                   v.GetInt("pg-port"),
 		HTTPPort:                 v.GetInt("http-port"),
 		HTTPAllowedOrigins:       v.GetStringSlice("http-allowed-origins"),
+		HTTPUI:                   v.GetBool("http-ui"),
 		MCPResourceURL:           v.GetString("mcp-resource-url"),
 		MCPMaxRows:               v.GetInt("mcp-max-rows"),
 		VerifiedQueriesFile:      v.GetString("verified-queries-file"),

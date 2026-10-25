@@ -20,6 +20,7 @@ A lightweight analytical SQL server: **Apache Arrow Flight SQL** on top of **Duc
 | Workload control | Session registry, kill session, resource groups & statement queuing, rate limits, query timeouts, admin via Flight DoAction |
 | Observability | Prometheus `/metrics` + `karhutla_metrics()`, `karhutla_query_history()`, slow-query log, JSON audit log |
 | AI agents | MCP server (stdio + Streamable HTTP/OAuth) with the `ai_sandbox` profile enforced, verified queries + semantic model |
+| Web UI | Browser SQL editor, readable tables, sessions (kill), query history, and jobs at `/` on `--http-port`, embedded in the binary; same governance as the API |
 | Operations | Bulk ingest (`adbc_ingest`), tiered backups to the WORM archive, versioned schema migrations, signing keys in Vault/HSM; scheduled jobs (cron) for signed reports and atomic materialized-table refreshes (`--jobs-file`) |
 
 ## Architecture

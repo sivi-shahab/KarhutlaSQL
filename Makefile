@@ -6,7 +6,7 @@ TAGS    := duckdb_arrow
 PYTHON  ?= .venv/bin/python
 TPCH    := tests/data/tpch_sf0_01.duckdb
 
-.PHONY: build test test-integration testdata lint vuln sbom docs bench run-dev dev-certs docker docker-lake
+.PHONY: webui build test test-integration testdata lint vuln sbom docs bench run-dev dev-certs docker docker-lake
 
 build:
 	go build -tags $(TAGS) -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
@@ -38,6 +38,12 @@ sbom: build
 	$(SYFT) scan file:bin/karhutlasql-client -o cyclonedx-json=dist/karhutlasql-client.sbom.cdx.json
 	@if docker image inspect $(IMAGE) >/dev/null 2>&1; then \
 		$(SYFT) scan docker:$(IMAGE) -o cyclonedx-json=dist/karhutlasql-image.sbom.cdx.json; fi
+
+# Web UI (Vue) → internal/webui/dist (di-embed; hasil build di-commit agar
+# go build tidak butuh Node).
+webui:
+	npm --prefix web ci --no-audit --no-fund
+	npm --prefix web run build
 
 # Situs dokumentasi VitePress → docs/.vitepress/dist (gagal pada dead link).
 docs:

@@ -31,6 +31,7 @@ inside the server, so they pass through exactly the same governance.
 | Protocols | Arrow Flight SQL: queries, prepared statements, parameters, metadata, bulk ingest, `GetSqlInfo` | [Client](/client) |
 | PostgreSQL wire | psql, Power BI/Npgsql, ODBC, pgx: simple & extended protocol, binary formats, cancel, TLS | [PostgreSQL protocol](/postgres) |
 | HTTP API | `POST /api/v1/query` → Arrow IPC stream for web apps and notebooks, CORS | [HTTP query API](/http-api) |
+| Web UI | SQL editor, tables, sessions, history, and jobs in the browser | [Web UI](/web-ui) |
 | Data sharing | Delta Sharing server for regulators and partners, governed per recipient, signed download URLs | [Delta Sharing](/sharing) |
 | Identity | Local users (bcrypt), OIDC/JWKS (Keycloak, Entra ID, Okta), TLS & mTLS, allow-lists | [Authentication](/auth) |
 | Authorization | Default-deny privileges per catalog/schema/table, role mapping from token claims | [Policy](/policy) |

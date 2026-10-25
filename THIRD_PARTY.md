@@ -51,6 +51,14 @@ Semua dependency harus berlisensi permisif (Apache-2.0 / MIT / BSD / MPL-2.0 den
 | github.com/robfig/cron/v3 | MIT | Parser jadwal cron job terjadwal (Fase 9b) |
 | github.com/zalando/go-keyring | MIT | *(belum dipakai)* token store keyring klien (E-10); Fase 5 memakai file 0600 |
 
+## Web UI (Fase 10a; dibundel ke `internal/webui/dist`, di-embed ke binary)
+
+| Paket | Lisensi | Kegunaan |
+|---|---|---|
+| vue 3.5 (+ dependensi bundel: MIT, ISC, BSD-2/3-Clause, 0BSD, Apache-2.0) | MIT | Framework UI |
+| apache-arrow (JS) 21.2 | Apache-2.0 | Membaca stream Arrow IPC dari `/api/v1/query` di browser |
+| vite 6, @vitejs/plugin-vue 5 (build saja) | MIT | Build UI |
+
 ## Ekstensi DuckDB (image varian `lake`, Fase 8a)
 
 Diunduh dari `extensions.duckdb.org` saat `make docker-lake` (bukan Go module, tidak di-link ke binary statis).
@@ -81,6 +89,7 @@ Diunduh dari `extensions.duckdb.org` saat `make docker-lake` (bukan Go module, t
 | pyarrow | Apache-2.0 | Integration test |
 | flight-sql-jdbc-driver (Java, 19.0.0) | Apache-2.0 | Smoke test JDBC (`tests/jdbc/`, tidak di-vendor) |
 | delta-sharing (Python, 1.3.3) | Apache-2.0 | Integration test server Delta Sharing |
+| playwright (Python, 1.55) | Apache-2.0 | Integration test Web UI (memakai Chrome/Chromium yang ada) |
 | pytest | MIT | Integration test |
 | vitepress 1.6.4 (+ dependensinya: vue, vite, shiki, minisearch, dll.; devDependency `docs/package.json`, tidak di-link ke binary) | MIT (dependensi: MIT/ISC/BSD; ikon `@iconify-json/simple-icons` CC0-1.0) | Situs dokumentasi |
 | actions/setup-node | MIT | Node untuk build dokumentasi di CI |

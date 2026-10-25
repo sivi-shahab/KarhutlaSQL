@@ -3,6 +3,7 @@ graft/
 *.zip
 bin/
 dist/
+!internal/webui/dist/
 coverage.out
 .venv/
 tests/data/*.duckdb
@@ -11,6 +12,7 @@ __pycache__/
 .pytest_cache/
 .dev/
 docs/node_modules/
+web/node_modules/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 .archify/

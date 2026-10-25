@@ -78,6 +78,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/sqlext"
 	"github.com/bankmega/karhutlasql/internal/verified"
 	"github.com/bankmega/karhutlasql/internal/version"
+	"github.com/bankmega/karhutlasql/internal/webui"
 	"github.com/bankmega/karhutlasql/pkg/client"
 )
 
@@ -416,8 +417,12 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 			cancel()
 			return errors.Join(err, httpLis.Close(), <-errc)
 		}
-		h := httpapi.Handler(httpapi.Config{Login: flightLogin(fc, httpapi.Channel), Flight: fc, ChannelHeader: auth.ChannelHeader,
-			AllowedOrigins: cfg.HTTPAllowedOrigins, Log: log})
+		mux := http.NewServeMux()
+		mux.Handle("/api/", httpapi.Handler(httpapi.Config{Login: flightLogin(fc, httpapi.Channel), Flight: fc, ChannelHeader: auth.ChannelHeader,
+			AllowedOrigins: cfg.HTTPAllowedOrigins, Log: log}))
+		if cfg.HTTPUI {
+			mux.Handle("/", webui.Handler())
+		}
 		if shares != nil {
 			sh, err := sharing.Handler(ctx, sharing.Deps{Config: shares, Flight: fc, ChannelHeader: auth.ChannelHeader,
 				Token: func(r string) (string, error) { tok, _, err := authn.IssueShare(r); return tok, err },
@@ -426,16 +431,13 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 				cancel()
 				return errors.Join(err, httpLis.Close(), fc.Close(), <-errc)
 			}
-			mux := http.NewServeMux()
-			mux.Handle("/", h)
 			mux.Handle(sharing.Prefix+"/", sh)
-			h = mux
 			log.Info("delta sharing enabled", "shares", len(shares.Shares), "recipients", len(shares.Recipients))
 		}
 		n += 2 // Flight SQL in-process + HTTP
-		log.Info("http query endpoint enabled", "port", cfg.HTTPPort, "allowed_origins", cfg.HTTPAllowedOrigins)
+		log.Info("http query endpoint enabled", "port", cfg.HTTPPort, "allowed_origins", cfg.HTTPAllowedOrigins, "web_ui", cfg.HTTPUI)
 		go func() {
-			err := admin.Serve(ctx, httpLis, h, log) // kembali setelah request selesai (shutdown)
+			err := admin.Serve(ctx, httpLis, mux, log) // kembali setelah request selesai (shutdown)
 			errc <- errors.Join(err, fc.Close())
 			cancel()
 		}()

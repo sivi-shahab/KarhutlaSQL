@@ -26,6 +26,8 @@ jobs:
         with:
           node-version: "22"
       - run: make docs
+      # Web UI ter-embed (internal/webui/dist) harus sesuai sumber web/.
+      - run: make webui && git diff --exit-code internal/webui/dist
 
   integration:
     runs-on: ubuntu-latest

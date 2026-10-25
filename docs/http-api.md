@@ -1,7 +1,7 @@
 # HTTP query API (Arrow IPC)
 
 For web applications, notebooks, and scripts that cannot use gRPC,
-`--http-port` serves a single endpoint:
+`--http-port` serves a query endpoint (and, at `/`, the [web UI](/web-ui)):
 
 ```
 POST /api/v1/query
@@ -81,6 +81,13 @@ console.table(table.toArray());
 ```
 
 :::
+
+## Other endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/v1/login` | Basic credentials of the local user → `{"token": "…"}`, so an application need not keep the password |
+| `GET /api/v1/tables` | Tables the caller may read: `[{"catalog", "schema", "name", "type"}]` (Flight SQL metadata, filtered by privileges) |
 
 ## Parameters
 

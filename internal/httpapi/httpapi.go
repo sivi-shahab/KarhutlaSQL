@@ -58,9 +58,12 @@ type request struct {
 	Params []any  `json:"params"`
 }
 
-// Handler mux HTTP: POST /api/v1/query.
+// Handler mux HTTP: POST /api/v1/query, POST /api/v1/login (Basic → token),
+// GET /api/v1/tables (tabel yang boleh dibaca pemanggil).
 func Handler(cfg Config) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/login", cfg.login)
+	mux.HandleFunc("GET /api/v1/tables", cfg.tables)
 	mux.HandleFunc("/api/v1/query", func(w http.ResponseWriter, r *http.Request) {
 		if cfg.cors(w, r) {
 			return
@@ -95,14 +98,86 @@ func (cfg Config) cors(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-func (cfg Config) query(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	token, err := cfg.token(ctx, r)
+// callMD metadata panggilan Flight (token pemanggil & kanal http); false =
+// 401 sudah ditulis.
+func (cfg Config) callMD(w http.ResponseWriter, r *http.Request) ([]string, bool) {
+	token, err := cfg.token(r.Context(), r)
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", `Bearer, Basic realm="karhutlasql"`)
 		writeError(w, http.StatusUnauthorized, err.Error())
+		return nil, false
+	}
+	md := []string{"authorization", "Bearer " + token}
+	if cfg.ChannelHeader != "" {
+		md = append(md, cfg.ChannelHeader, Channel)
+	}
+	return md, true
+}
+
+// login: Basic → {"token"} agar aplikasi (mis. Web UI) tidak menyimpan
+// password; token berumur --jwt-ttl dan bisa di-kill seperti sesi lain.
+func (cfg Config) login(w http.ResponseWriter, r *http.Request) {
+	user, pass, ok := r.BasicAuth()
+	if !ok {
+		w.Header().Set("WWW-Authenticate", `Basic realm="karhutlasql"`)
+		writeError(w, http.StatusUnauthorized, "Basic credentials required")
 		return
 	}
+	tok, err := cfg.Login(r.Context(), user, pass)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, map[string]string{"token": tok})
+}
+
+// tables: GetTables Flight SQL (sudah difilter ke catalog yang boleh dibaca).
+func (cfg Config) tables(w http.ResponseWriter, r *http.Request) {
+	md, ok := cfg.callMD(w, r)
+	if !ok {
+		return
+	}
+	ctx := metadata.AppendToOutgoingContext(r.Context(), md...)
+	info, err := cfg.Flight.GetTables(ctx, &flightsql.GetTablesOpts{})
+	if err != nil {
+		writeStatus(w, err)
+		return
+	}
+	rdr, err := cfg.fetch(ctx, info.Endpoint, nil)
+	if err != nil {
+		writeStatus(w, err)
+		return
+	}
+	defer rdr.Release()
+	type table struct {
+		Catalog string `json:"catalog"`
+		Schema  string `json:"schema"`
+		Name    string `json:"name"`
+		Type    string `json:"type"`
+	}
+	out := []table{}
+	for rdr.Next() {
+		rec := rdr.RecordBatch()
+		for i := range int(rec.NumRows()) {
+			// Clone: buffer batch dilepas pada Next() berikutnya.
+			out = append(out, table{Catalog: strings.Clone(rec.Column(0).ValueStr(i)), Schema: strings.Clone(rec.Column(1).ValueStr(i)),
+				Name: strings.Clone(rec.Column(2).ValueStr(i)), Type: strings.Clone(rec.Column(3).ValueStr(i))})
+		}
+	}
+	if err := rdr.Err(); err != nil {
+		writeStatus(w, err)
+		return
+	}
+	writeJSON(w, out)
+}
+
+func (cfg Config) query(w http.ResponseWriter, r *http.Request) {
+	md, ok := cfg.callMD(w, r)
+	if !ok {
+		return
+	}
+	ctx := metadata.AppendToOutgoingContext(r.Context(), md...)
 	var req request
 	dec := json.NewDecoder(io.LimitReader(r.Body, maxBody))
 	dec.UseNumber()
@@ -110,11 +185,6 @@ func (cfg Config) query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, `body must be JSON {"sql": "...", "params": [...]}`)
 		return
 	}
-	md := []string{"authorization", "Bearer " + token}
-	if cfg.ChannelHeader != "" {
-		md = append(md, cfg.ChannelHeader, Channel)
-	}
-	ctx = metadata.AppendToOutgoingContext(ctx, md...)
 	rdr, err := cfg.execute(ctx, req)
 	if err != nil {
 		writeStatus(w, err)
@@ -291,6 +361,11 @@ func writeStatus(w http.ResponseWriter, err error) {
 		code = http.StatusInternalServerError
 	}
 	writeError(w, code, st.Message())
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

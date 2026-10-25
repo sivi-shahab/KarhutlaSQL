@@ -57,9 +57,16 @@ func TestMethodAndAuth(t *testing.T) {
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET = %d", w.Code)
 	}
+	for _, path := range []string{"/api/v1/query", "/api/v1/login"} {
+		w = httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(`{"sql":"SELECT 1"}`)))
+		if w.Code != http.StatusUnauthorized || w.Header().Get("WWW-Authenticate") == "" {
+			t.Errorf("%s without auth = %d %v", path, w.Code, w.Header())
+		}
+	}
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/query", strings.NewReader(`{"sql":"SELECT 1"}`)))
-	if w.Code != http.StatusUnauthorized || w.Header().Get("WWW-Authenticate") == "" {
-		t.Errorf("no auth = %d %v", w.Code, w.Header())
+	h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/tables", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("tables without auth = %d", w.Code)
 	}
 }

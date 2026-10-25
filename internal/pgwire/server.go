@@ -115,7 +115,7 @@ type conn struct {
 	nc      net.Conn
 	be      *pgproto3.Backend
 	pid     uint32
-	secret  uint32
+	secret  []byte // kunci CancelRequest (4 byte, protokol 3.0)
 	token   string
 	stmts   map[string]*stmt
 	portals map[string]*portal
@@ -185,7 +185,7 @@ func (s *Server) handle(ctx context.Context, nc net.Conn) {
 		c.fatal("28P01", "password authentication failed for user \""+user+"\"")
 		return
 	}
-	c.pid, c.secret = randUint32(), randUint32()
+	c.pid, c.secret = randUint32(), binary.BigEndian.AppendUint32(nil, randUint32())
 	s.mu.Lock()
 	s.conns[c.pid] = c
 	s.mu.Unlock()
@@ -258,11 +258,11 @@ func (c *conn) startup(ctx context.Context) (*pgproto3.StartupMessage, error) {
 	}
 }
 
-func (s *Server) cancelRequest(pid, secret uint32) {
+func (s *Server) cancelRequest(pid uint32, secret []byte) {
 	s.mu.Lock()
 	c := s.conns[pid]
 	s.mu.Unlock()
-	if c == nil || subtle.ConstantTimeEq(int32(c.secret), int32(secret)) != 1 { //nolint:gosec // perbandingan bit
+	if c == nil || subtle.ConstantTimeCompare(c.secret, secret) != 1 {
 		return
 	}
 	c.mu.Lock()

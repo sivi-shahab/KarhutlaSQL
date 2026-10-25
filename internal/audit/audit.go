@@ -42,6 +42,8 @@ const (
 	ClassificationScan = "classification_scan"
 	// Job terjadwal (fase 9b): Object = nama job, Detail = jenis.
 	JobRun = "job_run"
+	// Delta Sharing (fase 9e): User = share:<recipient>, Object = share.schema.table.
+	ShareQuery = "share_query"
 )
 
 // Event satu baris audit (JSON). Field kosong dihilangkan.

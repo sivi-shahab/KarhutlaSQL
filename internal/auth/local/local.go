@@ -64,8 +64,8 @@ func New(cfg Config) (*Authenticator, error) {
 	if cfg.Username == "" || cfg.Password == "" {
 		return nil, errors.New("local.New: username and password are required")
 	}
-	if strings.HasPrefix(cfg.Username, JobPrefix) {
-		return nil, fmt.Errorf("local.New: username must not start with %q (reserved for scheduled jobs)", JobPrefix)
+	if strings.HasPrefix(cfg.Username, JobPrefix) || strings.HasPrefix(cfg.Username, SharePrefix) {
+		return nil, fmt.Errorf("local.New: username must not start with %q or %q (reserved for internal identities)", JobPrefix, SharePrefix)
 	}
 	if cfg.TTL <= 0 || cfg.TTL > MaxTTL {
 		return nil, fmt.Errorf("local.New: ttl %s must be in (0, %s]", cfg.TTL, MaxTTL)
@@ -126,6 +126,19 @@ func (a *Authenticator) Login(username, password string) (string, auth.Identity,
 // JobPrefix awalan subject identitas job terjadwal (internal/jobs); user lokal
 // tidak boleh memakainya.
 const JobPrefix = "job:"
+
+// SharePrefix awalan subject identitas penerima Delta Sharing (internal/sharing).
+const SharePrefix = "share:"
+
+// IssueShare menerbitkan token lokal untuk penerima Delta Sharing
+// "share:<recipient>" — hanya dipanggil server sharing di dalam proses
+// setelah bearer token penerima diverifikasi; izin dari subjects policy.
+func (a *Authenticator) IssueShare(recipient string) (string, auth.Identity, error) {
+	if recipient == "" {
+		return "", auth.Identity{}, errors.New("local.IssueShare: empty recipient")
+	}
+	return a.issue(SharePrefix + recipient)
+}
 
 // IssueJob menerbitkan token lokal untuk identitas job terjadwal
 // "job:<name>" tanpa password — hanya dipanggil runner job di dalam proses

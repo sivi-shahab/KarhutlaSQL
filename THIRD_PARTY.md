@@ -80,6 +80,7 @@ Diunduh dari `extensions.duckdb.org` saat `make docker-lake` (bukan Go module, t
 | adbc-driver-flightsql (Python) | Apache-2.0 | Integration test |
 | pyarrow | Apache-2.0 | Integration test |
 | flight-sql-jdbc-driver (Java, 19.0.0) | Apache-2.0 | Smoke test JDBC (`tests/jdbc/`, tidak di-vendor) |
+| delta-sharing (Python, 1.3.3) | Apache-2.0 | Integration test server Delta Sharing |
 | pytest | MIT | Integration test |
 | vitepress 1.6.4 (+ dependensinya: vue, vite, shiki, minisearch, dll.; devDependency `docs/package.json`, tidak di-link ke binary) | MIT (dependensi: MIT/ISC/BSD; ikon `@iconify-json/simple-icons` CC0-1.0) | Situs dokumentasi |
 | actions/setup-node | MIT | Node untuk build dokumentasi di CI |

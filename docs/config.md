@@ -77,6 +77,10 @@ the secret, `*-file` flags point to a file (private keys must be 0600).
 | `--result-cache-ttl` | `KARHUTLASQL_RESULT_CACHE_TTL` | `0s` | lifetime of SELECT results in the result cache (per identity, invalidated when data changes); 0 = disabled |
 | `--revocation-sync-interval` | `KARHUTLASQL_REVOCATION_SYNC_INTERVAL` | `5s` | interval for syncing session kills across instances via the archive (revocations/); applies when an archive is configured |
 | `--session-idle-timeout` | `KARHUTLASQL_SESSION_IDLE_TIMEOUT` | `1h0m0s` | idle sessions are dropped from the registry (their statement/prepared handles go with them) |
+| `--sharing-dir` | `KARHUTLASQL_SHARING_DIR` | — | directory for exported Parquet files (0700); default &lt;state-dir&gt;/sharing |
+| `--sharing-endpoint` | `KARHUTLASQL_SHARING_ENDPOINT` | — | public base URL of the sharing endpoint for file URLs, e.g. https://kq.bank.local:8444/delta-sharing; empty = from the request Host |
+| `--sharing-file` | `KARHUTLASQL_SHARING_FILE` | — | YAML of Delta Sharing recipients (token sha256) and shares; exports run as identity share:&lt;recipient&gt; granted via policy subjects; served under /delta-sharing on --http-port; needs --policy-file |
+| `--sharing-file-ttl` | `KARHUTLASQL_SHARING_FILE_TTL` | `15m0s` | lifetime of signed file URLs and exported files |
 | `--slow-query-threshold` | `KARHUTLASQL_SLOW_QUERY_THRESHOLD` | `10s` | executions (excluding queueing) at least this long are logged as slow_query; 0 = disabled |
 | `--state-dir` | `KARHUTLASQL_STATE_DIR` | — | server state directory (policy approvals, 0700); default &lt;database dir&gt;/karhutlasql-state |
 | `--streaming-buffer-size` | `KARHUTLASQL_STREAMING_BUFFER_SIZE` | `64MB` | DuckDB streaming result buffer per statement (memory bound for results not yet read by the client); 0 = fully materialize (ADR 34) |

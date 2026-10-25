@@ -95,6 +95,11 @@ type Config struct {
 	VerifiedQueriesFile string
 	// Job terjadwal (backlog fase 9b); kosong = tanpa job.
 	JobsFile string
+	// Delta Sharing (backlog fase 9e); kosong = mati.
+	SharingFile     string
+	SharingDir      string
+	SharingEndpoint string
+	SharingFileTTL  time.Duration
 	// OpenTelemetry tracing (OTLP gRPC); endpoint kosong = mati.
 	OTelEndpoint    string
 	OTelInsecure    bool
@@ -191,6 +196,10 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.String("mcp-resource-url", "", "public URL of the MCP endpoint (e.g. https://kq.bank.local:8443/mcp) for RFC 9728 OAuth metadata; empty = no metadata")
 	fs.Int("mcp-max-rows", 500, "row limit per MCP tool result (on top of the ai_sandbox profile limits)")
 	fs.String("verified-queries-file", "", "YAML of verified queries + semantic model (karhutla_verified_queries(), MCP resources)")
+	fs.String("sharing-file", "", "YAML of Delta Sharing recipients (token sha256) and shares; exports run as identity share:<recipient> granted via policy subjects; served under /delta-sharing on --http-port; needs --policy-file")
+	fs.String("sharing-dir", "", "directory for exported Parquet files (0700); default <state-dir>/sharing")
+	fs.String("sharing-endpoint", "", "public base URL of the sharing endpoint for file URLs, e.g. https://kq.bank.local:8444/delta-sharing; empty = from the request Host")
+	fs.Duration("sharing-file-ttl", 15*time.Minute, "lifetime of signed file URLs and exported files")
 	fs.String("jobs-file", "", "YAML of scheduled jobs (cron): signed report runs and materialized table refreshes, each run as identity job:<name> granted via policy subjects; needs --policy-file")
 	fs.String("otel-endpoint", "", "OTLP gRPC collector (host:port) for OpenTelemetry tracing; auth headers via env OTEL_EXPORTER_OTLP_HEADERS; empty = disabled")
 	fs.Bool("otel-insecure", false, "OTLP without TLS (dev)")
@@ -293,6 +302,10 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 		MCPMaxRows:               v.GetInt("mcp-max-rows"),
 		VerifiedQueriesFile:      v.GetString("verified-queries-file"),
 		JobsFile:                 v.GetString("jobs-file"),
+		SharingFile:              v.GetString("sharing-file"),
+		SharingDir:               v.GetString("sharing-dir"),
+		SharingEndpoint:          v.GetString("sharing-endpoint"),
+		SharingFileTTL:           v.GetDuration("sharing-file-ttl"),
 		OTelEndpoint:             v.GetString("otel-endpoint"),
 		OTelInsecure:             v.GetBool("otel-insecure"),
 		OTelSampleRatio:          v.GetFloat64("otel-sample-ratio"),
@@ -318,6 +331,9 @@ func Load(fs *pflag.FlagSet) (Config, error) {
 	}
 	if c.BackupStagingDir == "" && c.StateDir != "" {
 		c.BackupStagingDir = filepath.Join(c.StateDir, "backup-staging")
+	}
+	if c.SharingDir == "" && c.StateDir != "" {
+		c.SharingDir = filepath.Join(c.StateDir, "sharing")
 	}
 	if err := c.validate(); err != nil {
 		return Config{}, fmt.Errorf("config.Load: %w", err)
@@ -371,6 +387,9 @@ func (c Config) validate() error {
 	}
 	if c.ReportSigningVaultKey != "" && c.ReportSigningKeyFile != "" {
 		errs = append(errs, errors.New("report-signing-vault-key and report-signing-key-file are mutually exclusive"))
+	}
+	if c.SharingFile != "" && (c.HTTPPort == 0 || c.PolicyFile == "" || c.SharingDir == "" || c.SharingFileTTL <= 0) {
+		errs = append(errs, errors.New("sharing-file requires http-port, policy-file, sharing-dir (or state-dir) and a positive sharing-file-ttl"))
 	}
 	if c.PGPort < 0 || c.PGPort > 65535 || c.HTTPPort < 0 || c.HTTPPort > 65535 {
 		errs = append(errs, errors.New("pg-port and http-port must be 0..65535"))

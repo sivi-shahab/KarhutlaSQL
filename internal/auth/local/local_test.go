@@ -139,6 +139,7 @@ func TestNew_Invalid(t *testing.T) {
 		{"ttl too long", Config{Username: "a", Password: "p", TTL: 25 * time.Hour, HMACSecret: secret}},
 		{"both keys", Config{Username: "a", Password: "p", TTL: time.Hour, HMACSecret: secret, RSAKey: key}},
 		{"reserved job prefix", Config{Username: "job:x", Password: "p", TTL: time.Hour, HMACSecret: secret}},
+		{"reserved share prefix", Config{Username: "share:x", Password: "p", TTL: time.Hour, HMACSecret: secret}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -165,5 +166,8 @@ func TestIssueJob(t *testing.T) {
 	}
 	if _, _, err := a.IssueJob(""); err == nil {
 		t.Fatal("empty job name accepted")
+	}
+	if _, id, err := a.IssueShare("ojk"); err != nil || id.Subject != "share:ojk" {
+		t.Fatalf("IssueShare = %+v %v", id, err)
 	}
 }

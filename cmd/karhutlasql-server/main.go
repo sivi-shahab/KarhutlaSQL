@@ -74,6 +74,7 @@ import (
 	"github.com/bankmega/karhutlasql/internal/scheduler"
 	"github.com/bankmega/karhutlasql/internal/server"
 	"github.com/bankmega/karhutlasql/internal/session"
+	"github.com/bankmega/karhutlasql/internal/sharing"
 	"github.com/bankmega/karhutlasql/internal/sqlext"
 	"github.com/bankmega/karhutlasql/internal/verified"
 	"github.com/bankmega/karhutlasql/internal/version"
@@ -219,6 +220,10 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		allowed = append(slices.Clone(allowed), strings.TrimSuffix(cfg.BackupStagingDir, "/")+"/")
 	}
 	vset, err := verified.Load(cfg.VerifiedQueriesFile)
+	if err != nil {
+		return err
+	}
+	shares, err := sharing.Load(cfg.SharingFile)
 	if err != nil {
 		return err
 	}
@@ -413,6 +418,20 @@ func serve(ctx context.Context, cfg config.Config, auditOut, logOut io.Writer) (
 		}
 		h := httpapi.Handler(httpapi.Config{Login: flightLogin(fc, httpapi.Channel), Flight: fc, ChannelHeader: auth.ChannelHeader,
 			AllowedOrigins: cfg.HTTPAllowedOrigins, Log: log})
+		if shares != nil {
+			sh, err := sharing.Handler(ctx, sharing.Deps{Config: shares, Flight: fc, ChannelHeader: auth.ChannelHeader,
+				Token: func(r string) (string, error) { tok, _, err := authn.IssueShare(r); return tok, err },
+				Dir:   cfg.SharingDir, FileTTL: cfg.SharingFileTTL, Endpoint: cfg.SharingEndpoint, Audit: auditLog, Log: log})
+			if err != nil {
+				cancel()
+				return errors.Join(err, httpLis.Close(), fc.Close(), <-errc)
+			}
+			mux := http.NewServeMux()
+			mux.Handle("/", h)
+			mux.Handle(sharing.Prefix+"/", sh)
+			h = mux
+			log.Info("delta sharing enabled", "shares", len(shares.Shares), "recipients", len(shares.Recipients))
+		}
 		n += 2 // Flight SQL in-process + HTTP
 		log.Info("http query endpoint enabled", "port", cfg.HTTPPort, "allowed_origins", cfg.HTTPAllowedOrigins)
 		go func() {
